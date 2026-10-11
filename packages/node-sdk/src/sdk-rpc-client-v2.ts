@@ -134,6 +134,8 @@ import { encodeWorkDirKey } from '@moonshot-ai/agent-core-v2/_base/utils/workdir
 import { McpConnectionManager } from '@moonshot-ai/agent-core-v2/mcpCore/connection-manager';
 import { loadMcpServers } from '@moonshot-ai/agent-core-v2/app/mcpConfig/configLoader';
 import { fsSuggestRequestSchema } from '@moonshot-ai/agent-core-v2/workspace/workspaceFs/fs';
+import type { PromptHandle } from '@moonshot-ai/agent-core-v2/agent/loop/loop';
+import { PromptSubmitted } from '@moonshot-ai/agent-core-v2/agent/prompt/promptEvents';
 import { IAppendLogStore } from '@moonshot-ai/agent-core-v2/persistence/interface/appendLogStore';
 import {
   bootstrap,
@@ -167,6 +169,7 @@ import {
   IAgentTowerService,
   IBootstrapService,
   IConfigService,
+  IEventBus,
   IEventService,
   IFlagService,
   IHostEnvironment,
@@ -2052,14 +2055,30 @@ export class SDKRpcClientV2 extends SDKRpcClientBase {
    * anchor. v2-only: the base class rejects this method on the v1 engine.
    */
   override async promptWithSkills(input: SessionPromptWithSkillsRpcInput): Promise<void> {
+    const scope = await this.agentScope(input.sessionId);
     const agent = await this.agentFacade(input.sessionId);
+    const loop = scope.accessor.get(IAgentLoopService);
+    const submittedHandles = new Map<string, PromptHandle>();
+    const subscription = scope.accessor.get(IEventBus).subscribe(PromptSubmitted, (event) => {
+      const handle = loop.promptHandle(event.promptId);
+      if (handle !== undefined) submittedHandles.set(event.promptId, handle);
+    });
     const submission = await agent.promptWithSkills({
       input: input.input,
       skills: input.skills,
       steerIfActive: input.steerIfActive,
-    });
-    if (submission.state === 'blocked') {
+    }).finally(() => { subscription.dispose(); });
+    const handle = submittedHandles.get(submission.prompt_id);
+    submittedHandles.clear();
+    const turn = submission.state === 'queued' ? await handle?.launched : undefined;
+    if (submission.state === 'blocked' || handle?.state === 'blocked') {
       throw new KimiError(ErrorCodes.REQUEST_INVALID, 'Prompt blocked by UserPromptSubmit hook');
+    }
+    if (submission.state === 'queued') {
+      if (turn === undefined) {
+        throw new KimiError(ErrorCodes.INTERNAL, 'promptWithSkills failed to launch a turn');
+      }
+      await turn.ready.catch(() => undefined);
     }
   }
 

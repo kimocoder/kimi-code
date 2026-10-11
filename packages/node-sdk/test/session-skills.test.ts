@@ -168,6 +168,95 @@ describe('Session skills', () => {
     }
   });
 
+  it.each([
+    { steerIfActive: undefined, blocksPrompt: true },
+    { steerIfActive: true, blocksPrompt: true },
+    { steerIfActive: undefined, blocksPrompt: false },
+    { steerIfActive: true, blocksPrompt: false },
+  ])('settles a queued skill after the submit hook runs (steer=$steerIfActive, blocked=$blocksPrompt)', async ({ steerIfActive, blocksPrompt }) => {
+    const restoreEnv = scrubConfigEnv();
+    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-skills-home-');
+    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-skills-work-');
+    await writeSkill(workDir, 'review', [
+      '---',
+      'name: review',
+      'description: Review code',
+      '---',
+      '',
+      'Review the requested file.',
+    ]);
+    const command = `${JSON.stringify(process.execPath)} -e "process.exit(${blocksPrompt ? 2 : 0})"`;
+    await writeFile(join(homeDir, 'config.toml'), [
+      '[[hooks]]',
+      'event = "UserPromptSubmit"',
+      'matcher = "/skill:"',
+      `command = ${JSON.stringify(command)}`,
+      'timeout = 5',
+    ].join('\n'));
+    const requests: Array<{ resolve: (value: Response) => void; reject: (reason: unknown) => void }> = [];
+    const fetchStub = vi.spyOn(globalThis, 'fetch').mockImplementation((input, init) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url !== 'https://model.example.test/v1/chat/completions') throw new Error(`Unexpected fetch: ${url}`);
+      return new Promise<Response>((resolve, reject) => {
+        requests.push({ resolve, reject });
+        init?.signal?.addEventListener('abort', () => { reject(new DOMException('Aborted', 'AbortError')); }, { once: true });
+      });
+    });
+    const response = () => new Response([
+      `data: ${JSON.stringify({ id: 'example-completion', object: 'chat.completion.chunk', created: 0, model: 'example-model', choices: [{ index: 0, delta: { content: 'Continue work.' }, finish_reason: null }] })}\n\n`,
+      `data: ${JSON.stringify({ id: 'example-completion', object: 'chat.completion.chunk', created: 0, model: 'example-model', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`,
+      'data: [DONE]\n\n',
+    ].join(''), { headers: { 'Content-Type': 'text/event-stream' } });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    let session: Awaited<ReturnType<typeof harness.createSession>> | undefined;
+    try {
+      await harness.setConfig({
+        providers: { example: { type: 'openai', baseUrl: 'https://model.example.test/v1', apiKey: 'YOUR_API_KEY' } },
+        models: { 'example-model': { provider: 'example', model: 'example-model', maxContextSize: 262144 } },
+        defaultModel: 'example-model',
+      });
+      session = await harness.createSession({ id: 'ses_sdk_queued_skill_blocked', workDir });
+      const events: Event[] = [];
+      session.onEvent((event) => { events.push(event); });
+      await session.createGoal({ objective: 'Continue controlled work until cancelled.' });
+      await session.prompt('Start the goal.');
+      await vi.waitFor(() => { expect(requests).toHaveLength(1); });
+      requests[0]!.resolve(response());
+      await vi.waitFor(() => { expect(requests).toHaveLength(2); });
+      expect(events).toContainEqual(expect.objectContaining({
+        type: 'turn.started', origin: expect.objectContaining({ kind: 'system_trigger', name: 'goal_continuation' }),
+      }));
+      const activated = waitForSDKEvent(session, (event) => event.type === 'skill.activated');
+      const hookResult = blocksPrompt
+        ? waitForSDKEvent(session, (event) => event.type === 'hook.result' && event.blocked === true)
+        : undefined;
+      const observed = session.promptWithSkills(
+        '/skill:review queued change', [{ name: 'review', args: 'queued change' }], { steerIfActive },
+      ).then(() => ({ accepted: true }), (error: unknown) => ({ accepted: false, error }));
+      await activated;
+      expect(requests).toHaveLength(2);
+      requests[1]!.resolve(response());
+      if (blocksPrompt) {
+        await hookResult;
+        expect(await observed).toMatchObject({
+          accepted: false,
+          error: { name: 'KimiError', code: 'request.invalid', message: 'Prompt blocked by UserPromptSubmit hook' },
+        });
+      } else {
+        expect(await observed).toEqual({ accepted: true });
+        await vi.waitFor(() => { expect(requests).toHaveLength(3); });
+        expect(events.filter((event) => event.type === 'turn.ended')).toHaveLength(2);
+      }
+    } finally {
+      await session?.cancelGoal();
+      await session?.cancel();
+      for (const request of requests) request.reject(new DOMException('Aborted', 'AbortError'));
+      await harness.close();
+      fetchStub.mockRestore();
+      restoreEnv();
+    }
+  });
+
   it('lists session skills without exposing content', async () => {
     const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-skills-home-');
     const workDir = await makeTempDir(tempDirs, 'kimi-sdk-skills-work-');
