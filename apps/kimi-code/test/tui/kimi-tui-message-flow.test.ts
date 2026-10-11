@@ -4250,6 +4250,128 @@ command = "vim"
     expect(driver.state.queuedMessages).toEqual([]);
   });
 
+  it('holds the queued tail of a rejected skill without blocking later ordinary input', async () => {
+    let rejectSkill!: (error: unknown) => void;
+    const held = new Promise<void>((_resolve, reject) => { rejectSkill = reject; });
+    const promptWithSkills = vi.fn(() => held);
+    const session = makeSession({
+      promptWithSkills,
+      listSkills: vi.fn(async () => [
+        { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
+      ]),
+    });
+    const { driver } = await makeDriver(session);
+    await (
+      driver as unknown as { refreshSkillCommands(s: unknown): Promise<void> }
+    ).refreshSkillCommands(session);
+    driver.state.appState.streamingPhase = 'waiting';
+    driver.streamingUI.setTurnId('1');
+    driver.handleUserInput('/skill:review FIRST');
+    driver.handleUserInput('QUEUED_TAIL');
+    driver.sessionEventHandler.handleEvent(
+      { type: 'turn.ended', agentId: 'main', turnId: 1, reason: 'completed' } as Event,
+      (item) => { driver.sendQueuedMessage(session, item); },
+    );
+    await vi.waitFor(() => { expect(promptWithSkills).toHaveBeenCalledOnce(); });
+    driver.handleUserInput('OUTSIDE');
+    rejectSkill(new Error('Skill unavailable'));
+    await vi.waitFor(() => { expect(driver.state.appState.streamingPhase).toBe('idle'); });
+    driver.state.editor.setText('NEXT');
+    driver.state.editor.handleInput('\r');
+    driver.sessionEventHandler.handleEvent(
+      { type: 'turn.ended', agentId: 'main', turnId: 2, reason: 'completed' } as Event,
+      (item) => { driver.sendQueuedMessage(session, item); },
+    );
+    await vi.waitFor(() => { expect(session.prompt).toHaveBeenCalledTimes(2); });
+    expect(session.prompt).toHaveBeenLastCalledWith('OUTSIDE', { promptId: undefined });
+    expect(driver.state.queuedMessages.map((item) => item.text)).toEqual([
+      '/skill:review FIRST', 'QUEUED_TAIL',
+    ]);
+    promptWithSkills.mockResolvedValue(undefined);
+    driver.streamingUI.setTurnId('3');
+    driver.state.editor.onCtrlS?.();
+    await vi.waitFor(() => { expect(driver.state.queuedMessages).toEqual([]); });
+    expect(promptWithSkills).toHaveBeenCalledTimes(2);
+    expect(session.steer).toHaveBeenCalledOnce();
+    expect(session.steer).toHaveBeenCalledWith('QUEUED_TAIL');
+  });
+
+  it('keeps queued bash dispatch unchanged after a skill rejection', async () => {
+    let rejectSkill!: (error: unknown) => void;
+    const held = new Promise<void>((_resolve, reject) => { rejectSkill = reject; });
+    const promptWithSkills = vi.fn(() => held);
+    const runShellCommand = vi.fn(async () => ({ stdout: '', stderr: '', isError: false }));
+    const session = makeSession({
+      promptWithSkills,
+      runShellCommand,
+      listSkills: vi.fn(async () => [
+        { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
+      ]),
+    });
+    const { driver } = await makeDriver(session);
+    await (
+      driver as unknown as { refreshSkillCommands(s: unknown): Promise<void> }
+    ).refreshSkillCommands(session);
+    driver.state.appState.streamingPhase = 'waiting';
+    driver.streamingUI.setTurnId('1');
+    driver.handleUserInput('/skill:review FIRST');
+    driver.state.appState.inputMode = 'bash';
+    driver.state.editor.inputMode = 'bash';
+    driver.handleUserInput('echo BASH_TAIL');
+    driver.state.appState.inputMode = 'prompt';
+    driver.state.editor.inputMode = 'prompt';
+    driver.sessionEventHandler.handleEvent(
+      { type: 'turn.ended', agentId: 'main', turnId: 1, reason: 'completed' } as Event,
+      (item) => { driver.sendQueuedMessage(session, item); },
+    );
+    await vi.waitFor(() => { expect(promptWithSkills).toHaveBeenCalledOnce(); });
+    rejectSkill(new Error('Skill unavailable'));
+    await vi.waitFor(() => { expect(driver.state.appState.streamingPhase).toBe('idle'); });
+    driver.state.editor.setText('NEXT');
+    driver.state.editor.handleInput('\r');
+    driver.sessionEventHandler.handleEvent(
+      { type: 'turn.ended', agentId: 'main', turnId: 2, reason: 'completed' } as Event,
+      (item) => { driver.sendQueuedMessage(session, item); },
+    );
+    await vi.waitFor(() => { expect(runShellCommand).toHaveBeenCalledOnce(); });
+    expect(runShellCommand).toHaveBeenCalledWith('echo BASH_TAIL', expect.objectContaining({ commandId: expect.any(String) }));
+    expect(session.prompt).toHaveBeenCalledOnce();
+    expect(promptWithSkills).toHaveBeenCalledOnce();
+    expect(driver.state.queuedMessages.map((item) => item.text)).toEqual(['/skill:review FIRST']);
+  });
+
+  it.each(['tower', 'wait-for'])('does not auto-steer a failed plain suffix of a skill batch (%s)', async (mode) => {
+    const session = makeSession({
+      steer: vi.fn().mockRejectedValueOnce(new Error('Tail rejected')).mockResolvedValue(undefined),
+      listSkills: vi.fn(async () => [
+        { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
+      ]),
+    });
+    const { driver } = await makeDriver(session);
+    await (
+      driver as unknown as { refreshSkillCommands(s: unknown): Promise<void> }
+    ).refreshSkillCommands(session);
+    driver.state.appState.streamingPhase = 'waiting';
+    driver.streamingUI.setTurnId('1');
+    driver.handleUserInput('/skill:review PREFIX');
+    driver.handleUserInput('TAIL');
+    driver.state.editor.onCtrlS?.();
+    await vi.waitFor(() => { expect(session.steer).toHaveBeenCalledOnce(); });
+    expect(session.promptWithSkills).toHaveBeenCalledOnce();
+    expect(driver.state.queuedMessages.map((item) => item.text)).toEqual(['TAIL']);
+    if (mode === 'tower') driver.state.appState.towerMode = true;
+    else startWaitFor(driver);
+    driver.handleUserInput('NEW_INPUT');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(session.steer).toHaveBeenCalledOnce();
+    expect(driver.state.queuedMessages.map((item) => item.text)).toEqual(['TAIL', 'NEW_INPUT']);
+    driver.state.editor.onCtrlS?.();
+    await vi.waitFor(() => { expect(driver.state.queuedMessages).toEqual([]); });
+    expect(session.steer).toHaveBeenCalledTimes(2);
+    expect(session.steer).toHaveBeenLastCalledWith('TAIL\n\nNEW_INPUT');
+    expect(session.promptWithSkills).toHaveBeenCalledOnce();
+  });
+
   it('requires an explicit retry for a rejected skill steer', async () => {
     const promptWithSkills = vi.fn<() => Promise<void>>()
       .mockRejectedValueOnce(new Error('Prompt blocked by UserPromptSubmit hook'))

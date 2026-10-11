@@ -1614,9 +1614,11 @@ export class KimiTUI {
     text: string,
     activations: readonly InlineSkillActivation[],
     extraction: ReturnType<typeof extractMediaAttachments>,
+    queuedTail: readonly QueuedMessage[] = [],
   ): Promise<void> {
     const restoreInput = (): void => {
       if (this.session !== session) return;
+      for (const message of queuedTail) message.manualOnly = true;
       this.state.queuedMessages.unshift({
         ...this.toQueuedMessage(text, {
           parts: extraction.hasMedia ? extraction.parts : undefined,
@@ -1867,6 +1869,7 @@ export class KimiTUI {
       this.beginSessionRequest();
       void this.runInlineSkillActivations(
         session, item.text, item.inlineSkillActivations, extraction,
+        this.state.queuedMessages.filter((message) => message.mode !== 'bash'),
       ).catch((error: unknown) => {
         this.handleSkillActivationError(session, error);
       });
@@ -4445,7 +4448,8 @@ export class KimiTUI {
 function isSteerableQueuedMessage(message: QueuedMessage): boolean {
   return (
     message.inlineSkillActivations === undefined &&
-    message.mode !== 'bash'
+    message.mode !== 'bash' &&
+    message.manualOnly !== true
   );
 }
 
