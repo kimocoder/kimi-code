@@ -146,6 +146,7 @@ describe('Session skills', () => {
       const session = await harness.createSession({ id: 'ses_sdk_skill_blocked', workDir });
       const events: Event[] = [];
       session.onEvent((event) => events.push(event));
+      const before = (await harness.listSessions({ workDir })).find((item) => item.id === session.id)!;
 
       await expect(session.promptWithSkills(input, skills, { steerIfActive })).rejects.toMatchObject({
         name: 'KimiError',
@@ -157,11 +158,17 @@ describe('Session skills', () => {
       }));
       expect(events.filter((event) => event.type === 'turn.started')).toHaveLength(0);
       expect(events.filter((event) => event.type === 'turn.ended')).toHaveLength(0);
+      const after = (await harness.listSessions({ workDir })).find((item) => item.id === session.id)!;
+      expect({ title: after.title, lastPrompt: after.lastPrompt }).toEqual({
+        title: before.title, lastPrompt: before.lastPrompt,
+      });
 
       const ended = waitForSDKEvent(session, (event) => event.type === 'turn.ended');
       await session.promptWithSkills('Review the next change.', [{ name: 'review' }]);
       await ended;
       expect(events.filter((event) => event.type === 'turn.started')).toHaveLength(1);
+      expect((await harness.listSessions({ workDir })).find((item) => item.id === session.id)?.lastPrompt)
+        .toBe('Review the next change.');
     } finally {
       await harness.close();
       restoreEnv();
@@ -216,6 +223,8 @@ describe('Session skills', () => {
         defaultModel: 'example-model',
       });
       session = await harness.createSession({ id: 'ses_sdk_queued_skill_blocked', workDir });
+      const readLastPrompt = async () =>
+        (await harness.listSessions({ workDir })).find((item) => item.id === session?.id)?.lastPrompt;
       const events: Event[] = [];
       session.onEvent((event) => { events.push(event); });
       await session.createGoal({ objective: 'Continue controlled work until cancelled.' });
@@ -235,6 +244,7 @@ describe('Session skills', () => {
       ).then(() => ({ accepted: true }), (error: unknown) => ({ accepted: false, error }));
       await activated;
       expect(requests).toHaveLength(2);
+      expect(await readLastPrompt()).toBe('Start the goal.');
       requests[1]!.resolve(response());
       if (blocksPrompt) {
         await hookResult;
@@ -242,10 +252,14 @@ describe('Session skills', () => {
           accepted: false,
           error: { name: 'KimiError', code: 'request.invalid', message: 'Prompt blocked by UserPromptSubmit hook' },
         });
+        expect(await readLastPrompt()).toBe('Start the goal.');
       } else {
         expect(await observed).toEqual({ accepted: true });
         await vi.waitFor(() => { expect(requests).toHaveLength(3); });
         expect(events.filter((event) => event.type === 'turn.ended')).toHaveLength(2);
+        await vi.waitFor(async () => {
+          expect(await readLastPrompt()).toBe('/skill:review queued change');
+        });
       }
     } finally {
       await session?.cancelGoal();

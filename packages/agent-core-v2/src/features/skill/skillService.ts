@@ -7,11 +7,12 @@ import type {
   SkillActivationOrigin,
 } from '#/agent/contextMemory/types';
 import { IAgentLoopService, type PromptLaunchResult, type Turn } from '#/agent/loop/loop';
+import { AgentErrorEvent } from '#/agent/mcp/mcpEvents';
 import { promptMetadataTextFromContentParts } from '#/agent/prompt/promptMetadataText';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IEventService } from '#/app/event/event';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
-import { ErrorCodes, Error2 } from '#/errors';
+import { ErrorCodes, Error2, toKimiErrorPayload } from '#/errors';
 import type { ContentPart } from '#human/llm/message';
 import { skillActivationPart } from '#human/agent/origin';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
@@ -135,16 +136,6 @@ export class AgentSkillService implements IAgentSkillService {
     const catalog = this.catalog;
     await catalog.ready;
     const prepared = input.skills.map((skill) => this.prepareBundled(skill));
-    if (this.scopeContext.agentContext.agentId === MAIN_AGENT_ID) {
-      await applyPromptMetadataUpdate(
-        {
-          metadata: this.metadata,
-          eventService: this.eventService,
-          sessionId: this.sessionContext.sessionId,
-        },
-        promptMetadataTextFromContentParts(input.input, input.clientMetadata),
-      );
-    }
     for (const activation of prepared) {
       void this.recordActivation(activation.origin);
     }
@@ -172,6 +163,22 @@ export class AgentSkillService implements IAgentSkillService {
       { steerIfActive: input.steerIfActive },
     );
     const handle = this.loop.promptHandle(id)!;
+    const metadataUpdated = handle.launched.then(async (turn) => {
+      if (turn === undefined || this.scopeContext.agentContext.agentId !== MAIN_AGENT_ID) return;
+      await turn.ready.catch(() => undefined);
+      await applyPromptMetadataUpdate(
+        {
+          metadata: this.metadata,
+          eventService: this.eventService,
+          sessionId: this.sessionContext.sessionId,
+        },
+        promptMetadataTextFromContentParts(input.input, input.clientMetadata),
+      );
+    }).catch((error: unknown) => {
+      void this.dispatcher.dispatch(new AgentErrorEvent({
+        ...toKimiErrorPayload(error), agentId: this.scopeContext.agentContext.agentId,
+      })).catch(() => undefined);
+    });
     if (!steerable && (status.state === 'running' || status.paused || status.queue.length > 0)) {
       return { prompt_id: id, created_at: handle.createdAt, state: 'queued' };
     }
@@ -181,6 +188,7 @@ export class AgentSkillService implements IAgentSkillService {
       throw new Error2(ErrorCodes.INTERNAL, 'promptWithSkills failed to launch a turn');
     }
     if (turn !== undefined) await turn.ready.catch(() => undefined);
+    await metadataUpdated;
     return {
       turn_id: turn?.id,
       prompt_id: id,

@@ -288,6 +288,7 @@ export interface QueuedMessage {
   readonly videoAttachmentIds?: readonly number[];
   readonly mediaSnapshots?: readonly MediaAttachment[];
   readonly mode?: 'prompt' | 'bash';
+  manualOnly?: true;
   /** Skills to activate together with this queued message's prompt. */
   readonly inlineSkillActivations?: readonly InlineSkillActivation[];
 }

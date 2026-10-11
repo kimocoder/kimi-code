@@ -1549,11 +1549,9 @@ export class KimiTUI {
       return;
     }
     this.beginSessionRequest();
-    void this.runInlineSkillActivations(session, text, activations, extraction).catch(
-      (error: unknown) => {
-        this.failSessionRequest(`Skill activation failed: ${formatErrorMessage(error)}`);
-      },
-    );
+    void this.runInlineSkillActivations(session, text, activations, extraction).catch((error: unknown) => {
+      this.handleSkillActivationError(session, error);
+    });
   }
 
   private queueSkillUserInput(
@@ -1619,15 +1617,16 @@ export class KimiTUI {
   ): Promise<void> {
     const restoreInput = (): void => {
       if (this.session !== session) return;
-      this.state.queuedMessages.unshift(
-        this.toQueuedMessage(text, {
+      this.state.queuedMessages.unshift({
+        ...this.toQueuedMessage(text, {
           parts: extraction.hasMedia ? extraction.parts : undefined,
           imageAttachmentIds: extraction.imageAttachmentIds,
           videoAttachmentIds: extraction.videoAttachmentIds,
           mediaSnapshots: extraction.mediaSnapshots,
           inlineSkillActivations: activations,
         }),
-      );
+        manualOnly: true,
+      });
       this.updateQueueDisplay();
     };
     let prepared: PreparedSkillActivations | undefined;
@@ -1675,6 +1674,13 @@ export class KimiTUI {
       imageAttachmentIds:
         extraction.imageAttachmentIds.length > 0 ? extraction.imageAttachmentIds : undefined,
     });
+  }
+
+  private handleSkillActivationError(session: Session, error: unknown): void {
+    if (this.session !== session) return;
+    const message = `Skill activation failed: ${formatErrorMessage(error)}`;
+    if (this.streamingUI.getTurnContext().turnId === undefined) this.failSessionRequest(message);
+    else this.showError(message);
   }
 
   validateMediaCapabilities(extraction: {
@@ -1862,7 +1868,7 @@ export class KimiTUI {
       void this.runInlineSkillActivations(
         session, item.text, item.inlineSkillActivations, extraction,
       ).catch((error: unknown) => {
-        this.failSessionRequest(`Skill activation failed: ${formatErrorMessage(error)}`);
+        this.handleSkillActivationError(session, error);
       });
       return;
     }
@@ -2080,6 +2086,7 @@ export class KimiTUI {
     if (batch.length === 0 || (!manual && !batch.every(isSteerableQueuedMessage))) return;
     const pending = [...batch];
     const sendNext = (): void => {
+      if (this.deferUserMessages || this.state.appState.isCompacting) return;
       let first = pending.shift();
       while (first !== undefined && !this.state.queuedMessages.includes(first)) first = pending.shift();
       if (first === undefined) {
@@ -2121,6 +2128,9 @@ export class KimiTUI {
           this.updateQueueDisplay();
           sendNext();
           return;
+        }
+        if (manual && batch.some((message) => message.inlineSkillActivations !== undefined)) {
+          for (const message of [...group, ...pending]) message.manualOnly = true;
         }
         this.staging.releaseQueued(group.filter((message) => !this.state.queuedMessages.includes(message)));
         this.updateQueueDisplay();
@@ -2295,10 +2305,10 @@ export class KimiTUI {
   }
 
   shiftQueuedMessage(): QueuedMessage | undefined {
-    if (this.state.queuedMessages.length === 0 || this.steeringQueuedMessages.size > 0) return undefined;
-    const [first, ...rest] = this.state.queuedMessages;
-    this.state.queuedMessages = rest;
-    return first;
+    if (this.steeringQueuedMessages.size > 0) return undefined;
+    const index = this.state.queuedMessages.findIndex((message) => message.manualOnly !== true);
+    if (index === -1) return undefined;
+    return this.state.queuedMessages.splice(index, 1)[0];
   }
 
   pushTranscriptEntry(entry: TranscriptEntry): void {
