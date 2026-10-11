@@ -1378,6 +1378,23 @@ describe('KimiTUI resume message replay', () => {
     expect(entries[0]!.skillNames).toEqual(['commit']);
   });
 
+  it.each([
+    { skillArgs: undefined, expected: '/example' },
+    { skillArgs: 'inspect project', expected: '/example inspect project' },
+  ])('preserves recorded builtin command syntax in replay ($expected)', async ({ skillArgs, expected }) => {
+    const driver = await replayIntoDriver([
+      message('user', [{ type: 'text', text: 'expanded builtin skill body' }], {
+        origin: {
+          kind: 'skill_activation', activationId: 'act-builtin', skillName: 'example',
+          skillSource: 'builtin', skillArgs, trigger: 'user-slash',
+        },
+      }),
+    ]);
+    expect(driver.state.transcriptEntries.filter((entry) => entry.kind === 'user')).toEqual([
+      expect.objectContaining({ content: expected, skillNames: ['example'] }),
+    ]);
+  });
+
   it('prefers explicitly saved caller text over the canonical reconstruction', async () => {
     const driver = await replayIntoDriver([
       message(

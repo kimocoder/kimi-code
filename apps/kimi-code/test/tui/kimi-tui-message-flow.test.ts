@@ -907,7 +907,7 @@ describe('KimiTUI message flow', () => {
     ]);
   });
 
-  it('does not append a user entry when the grouped submission is rejected (v2 engine)', async () => {
+  it('removes the user entry when the grouped submission is rejected (v2 engine)', async () => {
     const session = makeSession({
       id: 'ses-lazy',
       listSkills: vi.fn(async () => [
@@ -1428,6 +1428,50 @@ describe('KimiTUI message flow', () => {
       content: 'please /skill:review', skillNames: ['review'],
     }));
   });
+
+  it.each(['/skill:review inspect project', 'inspect project /skill:review'])(
+    'keeps the skill prompt above turn output while submission is pending (%s)',
+    async (input) => {
+      let resolveSkill!: () => void;
+      const request = new Promise<void>((resolve) => { resolveSkill = resolve; });
+      const session = makeSession({
+        listSkills: vi.fn(async () => [
+          { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
+        ]),
+        promptWithSkills: vi.fn(() => request),
+      });
+      const { driver } = await makeDriver(session);
+      await (
+        driver as unknown as { refreshSkillCommands(s: unknown): Promise<void> }
+      ).refreshSkillCommands(session);
+      driver.state.editor.setText(input);
+      driver.state.editor.handleInput('\r');
+      await vi.waitFor(() => { expect(session.promptWithSkills).toHaveBeenCalledOnce(); });
+      driver.sessionEventHandler.handleEvent({
+        type: 'turn.started', sessionId: session.id, agentId: 'main', turnId: 1,
+        origin: { kind: 'user' },
+      } as Event, () => {});
+      driver.sessionEventHandler.handleEvent({
+        type: 'assistant.delta', sessionId: session.id, agentId: 'main', turnId: 1,
+        delta: 'REVIEW-PROGRESS',
+      } as Event, () => {});
+      driver.sessionEventHandler.handleEvent({
+        type: 'tool.call.started', sessionId: session.id, agentId: 'main', turnId: 1,
+        toolCallId: 'tc-review', name: 'Bash', args: { command: 'printf review' },
+      } as Event, () => {});
+      resolveSkill();
+      await vi.waitFor(() => {
+        expect(driver.state.transcriptEntries.some((entry) => entry.content === input)).toBe(true);
+      });
+      const entries = driver.state.transcriptEntries;
+      const userIndex = entries.findIndex((entry) => entry.kind === 'user' && entry.content === input);
+      const outputIndex = entries.findIndex((entry) => entry.kind === 'assistant' || entry.kind === 'tool_call');
+      expect(outputIndex).toBeGreaterThanOrEqual(0);
+      expect(userIndex).toBeLessThan(outputIndex);
+      expect(entries.filter((entry) => entry.kind === 'user')).toHaveLength(1);
+      expect(driver.streamingUI.hasActiveToolCall('tc-review')).toBe(true);
+    },
+  );
 
   it('keeps the previous conclusion visible when a skill turn starts before submission settles', async () => {
     const session = makeSession({

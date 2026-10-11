@@ -53,6 +53,7 @@ export interface SkillActivationProjection {
   readonly activationId: string;
   readonly skillName: string;
   readonly skillArgs?: string;
+  readonly skillSource?: string;
   readonly trigger: SkillActivationTrigger;
   /** The activation rode a bundled prompt message, not a standalone one. */
   readonly bundled?: boolean;
@@ -322,6 +323,7 @@ export function skillActivationFromOrigin(
     activationId: origin.activationId,
     skillName: origin.skillName,
     skillArgs: origin.skillArgs,
+    skillSource: origin.skillSource,
     trigger: origin.trigger,
   };
 }
@@ -378,8 +380,9 @@ export function userSlashSkillPromptText(
   const [first, ...rest] = parts;
   const callerText = contentPartsToText(first?.type === 'text' ? rest : parts);
   if (callerText.trim().length > 0) return callerText;
+  const name = skill.skillSource === 'builtin' ? skill.skillName : `skill:${skill.skillName}`;
   const args = skill.skillArgs ?? '';
-  return args.trim().length > 0 ? `/skill:${skill.skillName} ${args}` : `/skill:${skill.skillName}`;
+  return args.trim().length > 0 ? `/${name} ${args}` : `/${name}`;
 }
 
 export function isInTurnOrigin(origin: PromptOrigin | undefined): boolean {

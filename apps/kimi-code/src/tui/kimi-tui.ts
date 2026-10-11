@@ -1657,16 +1657,7 @@ export class KimiTUI {
       prepared.stagingPaths,
       'user',
     );
-    const request = session.promptWithSkills(input, prepared.skills);
-    this.staging.trackDispatch(stagingLease, request, () => {
-      if (this.session !== session) return;
-      this.staging.defer(stagingLease);
-      this.releaseSkillArgumentMedia(prepared);
-      restoreInput();
-    });
-    await request;
-    if (this.session !== session) return;
-    this.appendTranscriptEntry({
+    const entry: TranscriptEntry = {
       id: nextTranscriptId(),
       kind: 'user',
       turnId: undefined,
@@ -1675,7 +1666,17 @@ export class KimiTUI {
       skillNames: activations.map((activation) => activation.skillName),
       imageAttachmentIds:
         extraction.imageAttachmentIds.length > 0 ? extraction.imageAttachmentIds : undefined,
+    };
+    this.appendTranscriptEntry(entry);
+    const request = session.promptWithSkills(input, prepared.skills);
+    this.staging.trackDispatch(stagingLease, request, () => {
+      if (this.session !== session) return;
+      this.removeTranscriptEntries([entry]);
+      this.staging.defer(stagingLease);
+      this.releaseSkillArgumentMedia(prepared);
+      restoreInput();
     });
+    await request;
   }
 
   private handleSkillActivationError(session: Session, error: unknown): void {
