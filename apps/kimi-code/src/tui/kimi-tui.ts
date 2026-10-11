@@ -149,6 +149,7 @@ import {
   sumTokenUsage,
   type AppState,
   type InlineSkillActivation,
+  type PreparedSkillActivations,
   type KimiTUIOptions,
   type LivePaneState,
   type LoginProgressSpinnerHandle,
@@ -302,12 +303,6 @@ function createInitialAppState(input: KimiTUIStartupInput): AppState {
     mcpServersSummary: null,
     banner: undefined,
   };
-}
-
-interface PreparedSkillActivations {
-  skills: Array<{ name: string; args?: string }>;
-  mediaAttachmentIds: number[];
-  stagingPaths: string[];
 }
 
 interface SendMessageOptions {
@@ -506,7 +501,7 @@ export class KimiTUI {
     );
     this.streamingUI = new StreamingUIController(this);
     this.authFlow = new AuthFlowController(this);
-    this.btwPanelController = new BtwPanelController(this);
+    this.btwPanelController = new BtwPanelController(this, this.imageStore, this.staging);
     this.sessionEventHandler = new SessionEventHandler(this);
     this.sessionReplay = new SessionReplayRenderer(this);
     this.tasksBrowserController = new TasksBrowserController(this);
@@ -1559,7 +1554,7 @@ export class KimiTUI {
     this.state.ui.requestRender();
   }
 
-  private prepareSkillActivations(
+  prepareSkillActivations(
     activations: readonly InlineSkillActivation[],
   ): PreparedSkillActivations {
     const prepared: PreparedSkillActivations = {
@@ -1588,7 +1583,7 @@ export class KimiTUI {
     }
   }
 
-  private releaseSkillArgumentMedia(prepared: PreparedSkillActivations): void {
+  releaseSkillArgumentMedia(prepared: PreparedSkillActivations): void {
     for (const id of prepared.mediaAttachmentIds) this.staging.releaseRecalled([id]);
     this.staging.releaseMedia([], prepared.stagingPaths);
   }

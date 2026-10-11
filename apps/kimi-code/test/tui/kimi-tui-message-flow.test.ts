@@ -119,6 +119,7 @@ function stripSgr(text: string): string {
 
 interface MessageDriver {
   state: TUIState;
+  btwPanelController: KimiTUI['btwPanelController'];
   surveyController: SurveyController;
   streamingUI: StreamingUIController;
   sessionReplay: SessionReplayRenderer;
@@ -5851,6 +5852,167 @@ command = "vim"
       ]);
     });
     expect(session.prompt).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { prefix: '/skill:review inspect', skills: [{ name: 'review', args: expect.stringContaining('Attached image file:') }] },
+    { prefix: 'inspect /skill:review', skills: [{ name: 'review' }] },
+    { prefix: '/skill:review /skill:security', skills: [{ name: 'review' }, { name: 'security' }] },
+  ])('sends a skill image to the open BTW panel without releasing it with the main turn ($prefix)', async ({ prefix, skills }) => {
+    const agentScopes: string[] = [];
+    const session = makeSession({
+      listSkills: vi.fn(async () => [
+        { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
+        { name: 'security', description: 'Security skill', path: '/tmp/security', source: 'user' },
+      ]),
+      promptWithSkills: vi.fn(async () => { agentScopes.push(harness.interactiveAgentId); }),
+    });
+    const { driver, harness } = await makeDriver(session);
+    await (
+      driver as unknown as { refreshSkillCommands(s: unknown): Promise<void> }
+    ).refreshSkillCommands(session);
+    await openBtwPanel(driver, session);
+    getMountedBtwPanel(driver).markDone();
+    const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
+    const attachment = stagedImage(imageStore, 'file-btw-image');
+    const input = `${prefix} ${attachment.placeholder}`;
+    driver.state.editor.setText(input);
+    driver.state.editor.handleInput('\r');
+
+    await vi.waitFor(() => {
+      expect(session.promptWithSkills).toHaveBeenCalledWith([
+        { type: 'text', text: `${prefix} ` },
+        { type: 'image_url', imageUrl: { url: 'kimi-file://file-btw-image' } },
+      ], skills);
+    });
+    expect(agentScopes).toEqual(['agent-btw']);
+    expect(stripSgr(renderBtwPanel(driver))).toContain(input);
+    emitTurn(driver, 1);
+    expect(harness.deleteFile).not.toHaveBeenCalled();
+    driver.sessionEventHandler.handleEvent({
+      type: 'turn.started', sessionId: session.id, agentId: 'agent-btw',
+      turnId: 1, origin: { kind: 'user' },
+    } as Event, () => {});
+    driver.sessionEventHandler.handleEvent({
+      type: 'turn.ended', sessionId: session.id, agentId: 'agent-btw',
+      turnId: 1, reason: 'completed',
+    } as Event, () => {});
+    await vi.waitFor(() => {
+      expect(harness.deleteFile).toHaveBeenCalledExactlyOnceWith('file-btw-image');
+    });
+  });
+
+  it.each(['ready', 'timeout', 'closed'] as const)('keeps a pending BTW skill video with its intended recipient (%s)', async (outcome) => {
+    process.env['KIMI_CODE_HOME'] = await makeTempHome();
+    const sourcePath = join(process.env['KIMI_CODE_HOME'], 'example.mp4');
+    await writeFile(sourcePath, 'example video');
+    const session = makeSession({
+      listSkills: vi.fn(async () => [
+        { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
+      ]),
+    });
+    const { driver, harness } = await makeDriver(session);
+    await (
+      driver as unknown as { refreshSkillCommands(s: unknown): Promise<void> }
+    ).refreshSkillCommands(session);
+    await openBtwPanel(driver, session);
+    getMountedBtwPanel(driver).markDone();
+    const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
+    const attachment = imageStore.addVideo('video/mp4', sourcePath);
+    let finishIngestion!: () => void;
+    attachment.pending = new Promise<void>((resolve) => {
+      finishIngestion = () => {
+        imageStore.completeVideo(attachment, { fileId: 'file-btw-video' });
+        resolve();
+      };
+    });
+    const input = `/skill:review inspect ${attachment.placeholder}`;
+    vi.useFakeTimers();
+    try {
+      driver.state.editor.setText(input);
+      driver.state.editor.handleInput('\r');
+      expect(session.promptWithSkills).not.toHaveBeenCalled();
+      if (outcome === 'closed') driver.btwPanelController.closeOrCancel();
+      if (outcome === 'timeout') {
+        driver.state.editor.setText('keep this draft');
+        await vi.advanceTimersByTimeAsync(2_000);
+        expect(stripSgr(renderBtwPanel(driver))).toContain('still uploading');
+        expect(driver.state.editor.getText()).toBe('keep this draft');
+      }
+      finishIngestion();
+      await vi.advanceTimersByTimeAsync(0);
+      if (outcome === 'ready') {
+        expect(session.promptWithSkills).toHaveBeenCalledExactlyOnceWith([
+          { type: 'text', text: '/skill:review inspect ' },
+          { type: 'video_url', videoUrl: { url: 'kimi-file://file-btw-video' } },
+        ], [{ name: 'review', args: expect.stringContaining('Attached video file:') }]);
+        driver.sessionEventHandler.handleEvent({
+          type: 'turn.started', sessionId: session.id, agentId: 'agent-btw',
+          turnId: 1, origin: { kind: 'user' },
+        } as Event, () => {});
+        driver.btwPanelController.closeOrCancel();
+        driver.sessionEventHandler.handleEvent({
+          type: 'turn.ended', sessionId: session.id, agentId: 'agent-btw',
+          turnId: 1, reason: 'cancelled',
+        } as Event, () => {});
+        await vi.advanceTimersByTimeAsync(0);
+        expect(harness.deleteFile).toHaveBeenCalledExactlyOnceWith('file-btw-video');
+      } else {
+        expect(session.promptWithSkills).not.toHaveBeenCalled();
+        expect(session.prompt).toHaveBeenCalledTimes(1);
+        expect(imageStore.get(attachment.id)?.fileId).toBe('file-btw-video');
+      }
+    } finally {
+      finishIngestion();
+      vi.useRealTimers();
+    }
+  });
+
+  it('retains a rejected BTW skill image and reparses it on retry', async () => {
+    const session = makeSession({
+      listSkills: vi.fn(async () => [
+        { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
+      ]),
+      promptWithSkills: vi.fn()
+        .mockRejectedValueOnce(new Error('Prompt rejected'))
+        .mockResolvedValue(undefined),
+    });
+    const { driver, harness } = await makeDriver(session);
+    await (
+      driver as unknown as { refreshSkillCommands(s: unknown): Promise<void> }
+    ).refreshSkillCommands(session);
+    await openBtwPanel(driver, session);
+    getMountedBtwPanel(driver).markDone();
+    const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
+    const attachment = stagedImage(imageStore, 'file-btw-retry');
+    const input = `/skill:review inspect ${attachment.placeholder}`;
+    driver.state.editor.setText(input);
+    driver.state.editor.handleInput('\r');
+    await vi.waitFor(() => {
+      expect(stripSgr(renderBtwPanel(driver))).toContain('Prompt rejected');
+      expect(driver.state.editor.getText()).toBe(input);
+    });
+    expect(harness.deleteFile).not.toHaveBeenCalled();
+    driver.state.editor.setText(`inspect ${attachment.placeholder} /skill:review`);
+    driver.state.editor.handleInput('\r');
+    await vi.waitFor(() => {
+      expect(session.promptWithSkills).toHaveBeenLastCalledWith([
+        { type: 'text', text: 'inspect ' },
+        { type: 'image_url', imageUrl: { url: 'kimi-file://file-btw-retry' } },
+        { type: 'text', text: ' /skill:review' },
+      ], [{ name: 'review' }]);
+    });
+    driver.sessionEventHandler.handleEvent({
+      type: 'turn.started', sessionId: session.id, agentId: 'agent-btw',
+      turnId: 1, origin: { kind: 'user' },
+    } as Event, () => {});
+    driver.sessionEventHandler.handleEvent({
+      type: 'turn.ended', sessionId: session.id, agentId: 'agent-btw',
+      turnId: 1, reason: 'completed',
+    } as Event, () => {});
+    await vi.waitFor(() => {
+      expect(harness.deleteFile).toHaveBeenCalledExactlyOnceWith('file-btw-retry');
+    });
   });
 
   it('activates inline skills in the initial /btw prompt (v2 engine)', async () => {

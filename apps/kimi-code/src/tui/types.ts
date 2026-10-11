@@ -267,6 +267,12 @@ export interface LivePaneState {
   pendingQuestion: PendingQuestion | null;
 }
 
+export interface PreparedSkillActivations {
+  skills: Array<{ name: string; args?: string }>;
+  mediaAttachmentIds: number[];
+  stagingPaths: string[];
+}
+
 export interface InlineSkillActivation {
   readonly skillName: string;
   readonly args?: string;
