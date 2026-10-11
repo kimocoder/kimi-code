@@ -1493,10 +1493,18 @@ export class KimiTUI {
       return;
     }
     let extraction: ExtractionResult;
+    if (preExtracted === undefined) {
+      const ingestionWait = pendingMediaIngestions(
+        text,
+        this.imageStore,
+        MEDIA_INGESTION_SUBMIT_WAIT_MS,
+      );
+      if (ingestionWait !== undefined) await ingestionWait;
+    }
     try {
       extraction = preExtracted ?? extractMediaAttachments(text, this.imageStore);
     } catch (error) {
-      this.state.editor.setText(text);
+      if (this.state.editor.getText().length === 0) this.state.editor.setText(text);
       this.showError(`Failed to prepare media attachment: ${formatErrorMessage(error)}`);
       return;
     }
@@ -1506,7 +1514,7 @@ export class KimiTUI {
         this.staging.releaseRecalled([
           ...extraction.imageAttachmentIds, ...extraction.videoAttachmentIds,
         ]);
-        this.state.editor.setText(text);
+        if (this.state.editor.getText().length === 0) this.state.editor.setText(text);
       }
       return;
     }
@@ -1522,7 +1530,6 @@ export class KimiTUI {
     if (
       this.deferUserMessages ||
       this.steeringQueuedMessages.size > 0 ||
-      this.state.appState.goal?.status === 'active' ||
       this.state.appState.streamingPhase !== 'idle' ||
       this.state.appState.isCompacting
     ) {
