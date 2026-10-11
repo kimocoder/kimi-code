@@ -13,6 +13,7 @@ import type {
 import type { MarkdownConfig, NotificationsConfig, StatusLineConfig, TuiMode, UpgradePreferences } from './config';
 import type { PendingApproval, PendingQuestion } from './reverse-rpc/types';
 import type { ColorToken, ThemeName } from './theme';
+import type { MediaAttachment, VideoAttachment } from './utils/image-attachment-store';
 
 export type BannerDisplay = 'always' | 'once' | 'cooldown';
 
@@ -271,6 +272,7 @@ export interface PreparedSkillActivations {
   skills: Array<{ name: string; args?: string }>;
   mediaAttachmentIds: number[];
   stagingPaths: string[];
+  cachedVideos: VideoAttachment[];
 }
 
 export interface InlineSkillActivation {
@@ -284,6 +286,7 @@ export interface QueuedMessage {
   readonly parts?: readonly PromptPart[];
   readonly imageAttachmentIds?: readonly number[];
   readonly videoAttachmentIds?: readonly number[];
+  readonly mediaSnapshots?: readonly MediaAttachment[];
   readonly mode?: 'prompt' | 'bash';
   /** Skills to activate together with this queued message's prompt. */
   readonly inlineSkillActivations?: readonly InlineSkillActivation[];
@@ -300,6 +303,7 @@ export interface SteerInputItem {
   readonly parts?: readonly PromptPart[];
   readonly imageAttachmentIds?: readonly number[];
   readonly videoAttachmentIds?: readonly number[];
+  readonly mediaSnapshots?: readonly MediaAttachment[];
   readonly inlineSkillActivations?: readonly InlineSkillActivation[];
 }
 

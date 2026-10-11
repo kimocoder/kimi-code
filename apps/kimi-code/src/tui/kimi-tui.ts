@@ -170,9 +170,10 @@ import {
 import { isDeadTerminalError } from './utils/dead-terminal';
 import { formatErrorMessage } from './utils/event-payload';
 import { pickForegroundTasks } from './utils/foreground-task';
-import { ImageAttachmentStore, type ImageAttachment } from './utils/image-attachment-store';
+import { ImageAttachmentStore, type ImageAttachment, type MediaAttachment } from './utils/image-attachment-store';
 import {
   extractMediaAttachments,
+  omitExpiredVideoFileRefs,
   originalsDirForSession,
   pendingMediaIngestions,
   refreshExpiringImageFileRefs,
@@ -309,6 +310,7 @@ interface SendMessageOptions {
   readonly parts?: readonly PromptPart[];
   readonly imageAttachmentIds?: readonly number[];
   readonly videoAttachmentIds?: readonly number[];
+  readonly mediaSnapshots?: readonly MediaAttachment[];
   readonly hasMedia?: boolean;
   /**
    * Lease pre-created at extraction time by `sendNormalUserInput`. Dispatch
@@ -1487,6 +1489,8 @@ export class KimiTUI {
       this.showError(LLM_NOT_SET_MESSAGE);
       return;
     }
+    const originatingSession = this.session;
+    const mediaGeneration = this.imageStore.generation;
     let extraction: ExtractionResult;
     if (preExtracted === undefined) {
       const ingestionWait = pendingMediaIngestions(
@@ -1495,9 +1499,22 @@ export class KimiTUI {
         MEDIA_INGESTION_SUBMIT_WAIT_MS,
       );
       if (ingestionWait !== undefined) await ingestionWait;
+      if (
+        (originatingSession !== undefined && this.session !== originatingSession) ||
+        this.imageStore.generation !== mediaGeneration
+      ) {
+        this.showError('Session changed while preparing media attachment; skill prompt not sent.');
+        return;
+      }
     }
     try {
       extraction = preExtracted ?? extractMediaAttachments(text, this.imageStore);
+      if (
+        preExtracted?.mediaGeneration !== undefined &&
+        preExtracted.mediaGeneration !== this.imageStore.generation
+      ) {
+        extraction = { ...preExtracted, imageAttachmentIds: [], videoAttachmentIds: [] };
+      }
     } catch (error) {
       if (this.state.editor.getText().length === 0) this.state.editor.setText(text);
       this.showError(`Failed to prepare media attachment: ${formatErrorMessage(error)}`);
@@ -1548,6 +1565,7 @@ export class KimiTUI {
       parts: extraction.hasMedia ? extraction.parts : undefined,
       imageAttachmentIds: extraction.imageAttachmentIds,
       videoAttachmentIds: extraction.videoAttachmentIds,
+      mediaSnapshots: extraction.mediaSnapshots,
       inlineSkillActivations: activations,
     });
     this.updateQueueDisplay();
@@ -1556,11 +1574,13 @@ export class KimiTUI {
 
   prepareSkillActivations(
     activations: readonly InlineSkillActivation[],
+    mediaSnapshots?: readonly MediaAttachment[],
   ): PreparedSkillActivations {
     const prepared: PreparedSkillActivations = {
       skills: [],
       mediaAttachmentIds: [],
       stagingPaths: [],
+      cachedVideos: [],
     };
     try {
       for (const activation of activations) {
@@ -1568,13 +1588,16 @@ export class KimiTUI {
           prepared.skills.push({ name: activation.skillName });
           continue;
         }
-        const rewrite = rewriteMediaPlaceholders(activation.args, this.imageStore, 'plain');
+        const rewrite = rewriteMediaPlaceholders(
+          activation.args, this.imageStore, 'plain', mediaSnapshots,
+        );
         this.imageStore.retainFileIds(rewrite.videoAttachmentIds);
         prepared.skills.push({ name: activation.skillName, args: rewrite.text });
         prepared.mediaAttachmentIds.push(
           ...new Set([...rewrite.imageAttachmentIds, ...rewrite.videoAttachmentIds]),
         );
         prepared.stagingPaths.push(...rewrite.stagingPaths);
+        prepared.cachedVideos.push(...rewrite.cachedVideos);
       }
       return prepared;
     } catch (error) {
@@ -1601,6 +1624,7 @@ export class KimiTUI {
           parts: extraction.hasMedia ? extraction.parts : undefined,
           imageAttachmentIds: extraction.imageAttachmentIds,
           videoAttachmentIds: extraction.videoAttachmentIds,
+          mediaSnapshots: extraction.mediaSnapshots,
           inlineSkillActivations: activations,
         }),
       );
@@ -1609,10 +1633,10 @@ export class KimiTUI {
     let prepared: PreparedSkillActivations | undefined;
     let input: string | readonly PromptPart[];
     try {
-      prepared = this.prepareSkillActivations(activations);
+      prepared = this.prepareSkillActivations(activations, extraction.mediaSnapshots);
       input = extraction.hasMedia
         ? resolveOriginalCaptions(
-            extraction.parts,
+            omitExpiredVideoFileRefs(extraction.parts, prepared.cachedVideos),
             extraction.imageAttachmentIds,
             this.imageStore,
             originalsDirForSession(session),
@@ -1658,6 +1682,7 @@ export class KimiTUI {
     imageAttachmentIds: readonly number[];
     videoAttachmentIds: readonly number[];
     imageSnapshots?: readonly unknown[];
+    mediaSnapshots?: readonly MediaAttachment[];
   }): boolean {
     if (!extraction.hasMedia) return true;
     if (
@@ -1668,7 +1693,8 @@ export class KimiTUI {
       return false;
     }
     if (
-      extraction.videoAttachmentIds.length > 0 &&
+      (extraction.videoAttachmentIds.length > 0 ||
+        extraction.mediaSnapshots?.some((snapshot) => snapshot.kind === 'video')) &&
       !this.supportsCurrentModelCapability('video_in')
     ) {
       this.showError('Current model does not support video input.');
@@ -1775,6 +1801,7 @@ export class KimiTUI {
           ? options.videoAttachmentIds
           : undefined,
       mode,
+      mediaSnapshots: options?.mediaSnapshots,
       inlineSkillActivations: options?.inlineSkillActivations,
     };
   }
@@ -1829,6 +1856,7 @@ export class KimiTUI {
         imageAttachmentIds: item.imageAttachmentIds !== undefined ? [...item.imageAttachmentIds] : [],
         videoAttachmentIds: item.videoAttachmentIds !== undefined ? [...item.videoAttachmentIds] : [],
         imageSnapshots: [],
+        mediaSnapshots: item.mediaSnapshots,
       };
       this.beginSessionRequest();
       void this.runInlineSkillActivations(
@@ -2151,14 +2179,21 @@ export class KimiTUI {
     let prepared: PreparedSkillActivations | undefined;
     let resolvedInput: readonly SteerInputItem[];
     try {
-      if (activations.length > 0) prepared = this.prepareSkillActivations(activations);
+      if (activations.length > 0) {
+        prepared = this.prepareSkillActivations(
+          activations,
+          input.some((item) => item.mediaSnapshots !== undefined)
+            ? input.flatMap((item) => item.mediaSnapshots ?? [])
+            : undefined,
+        );
+      }
       resolvedInput = input.map((item) =>
         item.parts === undefined
           ? item
           : {
               ...item,
               parts: resolveOriginalCaptions(
-                item.parts,
+                prepared === undefined ? item.parts : omitExpiredVideoFileRefs(item.parts, prepared.cachedVideos),
                 item.imageAttachmentIds ?? [],
                 this.imageStore,
                 originalsDirForSession(session),
@@ -4410,6 +4445,7 @@ function toSteerInputItem(message: QueuedMessage): SteerInputItem {
     parts: message.parts,
     imageAttachmentIds: message.imageAttachmentIds,
     videoAttachmentIds: message.videoAttachmentIds,
+    mediaSnapshots: message.mediaSnapshots,
     inlineSkillActivations: message.inlineSkillActivations,
   };
 }

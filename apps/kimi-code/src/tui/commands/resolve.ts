@@ -138,6 +138,7 @@ export function resolveUserInput(options: ResolveSlashCommandInput): {
       includeLeading: true,
     });
     if (tokens.length === 1 && tokens[0]?.start === 0) {
+      if (intent.kind !== 'skill') return { intent, activations: [] };
       return {
         intent,
         activations: [{ skillName: activations[0]!.skillName, args: text.slice(tokens[0].end).trim() }],
