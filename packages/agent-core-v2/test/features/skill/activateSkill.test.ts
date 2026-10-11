@@ -87,7 +87,7 @@ describe('promptWithSkills', () => {
     return { started, release: releaseGate };
   }
 
-  it.each([false, true])('reports metadata errors without rejecting an accepted skill (queued=%s)', async (queued) => {
+  it.each([false, true])('warns about metadata errors without rejecting an accepted skill (queued=%s)', async (queued) => {
     ctx = agentWithSkills();
     if (queued) ctx.mockNextResponse({ type: 'text', text: 'first done' });
     ctx.mockNextResponse({ type: 'text', text: 'skill done' });
@@ -114,8 +114,11 @@ describe('promptWithSkills', () => {
       }
       await ctx.untilTurnEnd();
       expect(ctx.allEvents).toContainEqual(expect.objectContaining({
-        type: '[rpc]', event: 'error',
+        type: '[rpc]', event: 'warning',
         args: expect.objectContaining({ code: 'internal', message: 'Metadata write failed' }),
+      }));
+      expect(ctx.allEvents).not.toContainEqual(expect.objectContaining({
+        type: '[rpc]', event: 'error',
       }));
       expect(ctx.llmCalls).toHaveLength(queued ? 2 : 1);
     } finally {

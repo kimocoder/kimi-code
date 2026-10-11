@@ -265,7 +265,11 @@ export class BtwPanelController {
       if (extraction !== undefined) {
         this.staging.releaseRecalled([...extraction.imageAttachmentIds, ...extraction.videoAttachmentIds]);
       }
-      if (this.host.session === session && this.host.state.editor.getText().length === 0) {
+      if (
+        this.host.session === session &&
+        this.panelsByAgentId.get(agentId) === panel &&
+        this.host.state.editor.getText().length === 0
+      ) {
         this.host.state.editor.setText(prompt);
       }
       throw error;

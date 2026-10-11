@@ -6553,6 +6553,47 @@ command = "vim"
     }
   });
 
+  it.each(['closed', 'replaced'] as const)(
+    'does not restore a cancelled BTW skill into another recipient (%s)',
+    async (target) => {
+      let rejectSkill!: (error: Error) => void;
+      const request = new Promise<void>((_, reject) => { rejectSkill = reject; });
+      const session = makeSession({
+        listSkills: vi.fn(async () => [
+          { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
+        ]),
+        promptWithSkills: vi.fn(() => request),
+      });
+      const { driver } = await makeDriver(session);
+      await (
+        driver as unknown as { refreshSkillCommands(s: unknown): Promise<void> }
+      ).refreshSkillCommands(session);
+      await openBtwPanel(driver, session);
+      const panel = getMountedBtwPanel(driver);
+      panel.markDone();
+      driver.state.editor.setText('/skill:review old side question');
+      driver.state.editor.handleInput('\r');
+      await vi.waitFor(() => { expect(session.promptWithSkills).toHaveBeenCalledOnce(); });
+      driver.state.editor.onEscape?.();
+      expect(driver.state.btwPanelContainer.children).toHaveLength(0);
+      if (target === 'replaced') {
+        session.startBtw.mockResolvedValueOnce('agent-replacement');
+        await openBtwPanel(driver, session, 'new side question');
+      }
+      rejectSkill(new Error('Prompt cancelled before launch'));
+      await vi.waitFor(() => {
+        expect(stripSgr(panel.render(120).join('\n'))).toContain('Prompt cancelled before launch');
+      });
+      expect(driver.state.editor.getText()).toBe('');
+      if (target === 'replaced') {
+        expect(stripSgr(renderBtwPanel(driver))).toContain('new side question');
+        expect(stripSgr(renderBtwPanel(driver))).not.toContain('old side question');
+      }
+      expect(session.promptWithSkills).toHaveBeenCalledOnce();
+      expect(driver.state.queuedMessages).toHaveLength(0);
+    },
+  );
+
   it('retains a rejected BTW skill image and reparses it on retry', async () => {
     const session = makeSession({
       listSkills: vi.fn(async () => [
@@ -7649,6 +7690,38 @@ command = "vim"
     );
 
     expect(stripSgr(renderTranscript(driver))).toContain('Interrupted by user');
+  });
+
+  it.each(['warning', 'error'] as const)('preserves active tools only for nonfatal notices (%s)', async (type) => {
+    const { driver, session } = await makeDriver();
+    const sendQueued = vi.fn();
+    driver.sessionEventHandler.handleEvent({
+      type: 'turn.started', sessionId: session.id, agentId: 'main', turnId: 1,
+      origin: { kind: 'user' },
+    } as Event, sendQueued);
+    driver.sessionEventHandler.handleEvent({
+      type: 'assistant.delta', sessionId: session.id, agentId: 'main', turnId: 1,
+      delta: 'Live response before notice',
+    } as Event, sendQueued);
+    driver.sessionEventHandler.handleEvent({
+      type: 'tool.call.started', sessionId: session.id, agentId: 'main', turnId: 1,
+      toolCallId: 'tc-metadata', name: 'Bash', args: { command: 'printf running' },
+    } as Event, sendQueued);
+    expect(driver.streamingUI.hasActiveToolCall('tc-metadata')).toBe(true);
+    driver.sessionEventHandler.handleEvent({
+      type, sessionId: session.id, agentId: 'main', code: 'internal',
+      message: 'Metadata write failed', retryable: type === 'error' ? true : undefined,
+    } as Event, sendQueued);
+    expect(driver.streamingUI.hasActiveToolCall('tc-metadata')).toBe(type === 'warning');
+    expect(driver.streamingUI.getTurnContext().turnId).toBe('1');
+    expect(stripSgr(renderTranscript(driver))).toContain('Metadata write failed');
+    if (type === 'warning') {
+      driver.sessionEventHandler.handleEvent({
+        type: 'tool.result', sessionId: session.id, agentId: 'main', turnId: 1,
+        toolCallId: 'tc-metadata', output: 'running', isError: false,
+      } as Event, sendQueued);
+      expect(stripSgr(renderTranscript(driver))).toContain('running');
+    }
   });
 
   it('appends the /export-debug-zip hint beneath session error messages', async () => {

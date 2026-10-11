@@ -7,7 +7,7 @@ import type {
   SkillActivationOrigin,
 } from '#/agent/contextMemory/types';
 import { IAgentLoopService, type PromptLaunchResult, type Turn } from '#/agent/loop/loop';
-import { AgentErrorEvent } from '#/agent/mcp/mcpEvents';
+import { WarningIssued } from '#/agent/profile/profileOps';
 import { promptMetadataTextFromContentParts } from '#/agent/prompt/promptMetadataText';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IEventService } from '#/app/event/event';
@@ -175,8 +175,9 @@ export class AgentSkillService implements IAgentSkillService {
         promptMetadataTextFromContentParts(input.input, input.clientMetadata),
       );
     }).catch((error: unknown) => {
-      void this.dispatcher.dispatch(new AgentErrorEvent({
-        ...toKimiErrorPayload(error), agentId: this.scopeContext.agentContext.agentId,
+      const { code, message } = toKimiErrorPayload(error);
+      void this.dispatcher.dispatch(new WarningIssued({
+        code, message, agentId: this.scopeContext.agentContext.agentId,
       })).catch(() => undefined);
     });
     if (!steerable && (status.state === 'running' || status.paused || status.queue.length > 0)) {
