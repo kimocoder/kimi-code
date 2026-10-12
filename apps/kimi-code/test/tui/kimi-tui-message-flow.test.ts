@@ -4093,6 +4093,54 @@ command = "vim"
     expect(driver.state.queuedMessages).toEqual([]);
   });
 
+  it.each(['/skill:review', 'check /skill:review'])(
+    'retries a failed skill video from input history (%s)',
+    async (prefix) => {
+      process.env['KIMI_CODE_HOME'] = await makeTempHome();
+      const sourcePath = join(process.env['KIMI_CODE_HOME'], 'example.mp4');
+      await writeFile(sourcePath, 'example video');
+      const promptWithSkills = vi.fn(async (_input: unknown) => {})
+        .mockRejectedValueOnce(new Error('Skill dispatch failed'))
+        .mockResolvedValue(undefined);
+      const session = makeSession({
+        promptWithSkills,
+        listSkills: vi.fn(async () => [
+          { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
+        ]),
+      });
+      const { driver, harness } = await makeDriver(session);
+      await (
+        driver as unknown as { refreshSkillCommands(session: unknown): Promise<void> }
+      ).refreshSkillCommands(session);
+      const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
+      const attachment = imageStore.addVideo('video/mp4', sourcePath);
+      imageStore.completeVideo(attachment, { fileId: 'file-retry-video' });
+      const input = `${prefix} ${attachment.placeholder}`;
+      driver.persistInputHistory = vi.fn(async (text) => { driver.state.editor.addToHistory(text); });
+      driver.state.editor.setText(input);
+      driver.state.editor.handleInput('\r');
+      await vi.waitFor(() => {
+        expect(session.promptWithSkills).toHaveBeenCalledOnce();
+        expect(driver.state.appState.streamingPhase).toBe('idle');
+      });
+      expect(attachment.fileId).toBe('file-retry-video');
+      expect(harness.deleteFile).not.toHaveBeenCalled();
+      expect(driver.state.queuedMessages).toEqual([]);
+      driver.state.editor.handleInput('\u001B[A');
+      expect(driver.state.editor.getText()).toBe(input);
+      driver.state.editor.handleInput('\r');
+      await vi.waitFor(() => { expect(session.promptWithSkills).toHaveBeenCalledTimes(2); });
+      expect(promptWithSkills.mock.calls[1]?.[0]).toContainEqual({
+        type: 'video_url', videoUrl: { url: 'kimi-file://file-retry-video' },
+      });
+      emitTurn(driver, 1);
+      await vi.waitFor(() => {
+        expect(harness.deleteFile).toHaveBeenCalledExactlyOnceWith('file-retry-video');
+      });
+      expect(attachment.fileId).toBeUndefined();
+    },
+  );
+
   it('recalls a skill preparation failure from input history', async () => {
     const session = makeSession({
       listSkills: vi.fn(async () => [
@@ -10019,6 +10067,59 @@ command = "vim"
     const transcript = stripSgr(renderTranscript(driver));
     expect(transcript).toContain('t7');
     expect(transcript).not.toContain('ctrl+o expand');
+  });
+
+  it.each(['ordinary input', '/skill:review file.ts', 'check /skill:review file.ts'])(
+    'accepts another input after UserPromptSubmit blocks an idle submission (%s)',
+    async (input) => {
+      const session = makeSession({
+        listSkills: vi.fn(async () => [
+          { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
+        ]),
+      });
+      const { driver } = await makeDriver(session);
+      await (
+        driver as unknown as { refreshSkillCommands(session: unknown): Promise<void> }
+      ).refreshSkillCommands(session);
+      driver.handleUserInput(input);
+      await vi.waitFor(() => {
+        expect(session.prompt.mock.calls.length + session.promptWithSkills.mock.calls.length).toBe(1);
+      });
+      expect(driver.state.appState.streamingPhase).toBe('waiting');
+      driver.sessionEventHandler.handleEvent(
+        {
+          type: 'hook.result',
+          agentId: 'main',
+          hookEvent: 'UserPromptSubmit',
+          content: 'Input blocked',
+          blocked: true,
+        } as Event,
+        (item) => { driver.sendQueuedMessage(session, item); },
+      );
+      expect(driver.state.appState.streamingPhase).toBe('idle');
+      expect(driver.state.transcriptEntries).toContainEqual(expect.objectContaining({
+        kind: 'user', content: input,
+      }));
+      driver.handleUserInput('continue now');
+      expect(session.prompt).toHaveBeenLastCalledWith('continue now', { promptId: undefined });
+      expect(driver.state.queuedMessages).toEqual([]);
+    },
+  );
+
+  it.each([
+    { hookEvent: 'UserPromptSubmit', blocked: false, active: false },
+    { hookEvent: 'PreToolUse', blocked: true, active: false },
+    { hookEvent: 'UserPromptSubmit', blocked: true, active: true },
+  ])('keeps waiting for a hook result that does not reject the idle submission ($hookEvent, blocked=$blocked, active=$active)', async ({ hookEvent, blocked, active }) => {
+    const { driver } = await makeDriver();
+    driver.state.appState.streamingPhase = 'waiting';
+    if (active) driver.streamingUI.setTurnId('1');
+    driver.sessionEventHandler.handleEvent(
+      { type: 'hook.result', agentId: 'main', hookEvent, content: 'Hook output', blocked } as Event,
+      () => {},
+    );
+    expect(driver.state.appState.streamingPhase).toBe('waiting');
+    expect(driver.streamingUI.hasActiveTurn()).toBe(active);
   });
 
   it('renders hook results without XML tags', async () => {

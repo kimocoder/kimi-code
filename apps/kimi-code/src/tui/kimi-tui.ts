@@ -1640,6 +1640,11 @@ export class KimiTUI {
     });
     const request = session.promptWithSkills(input, prepared.skills);
     this.staging.trackDispatch(stagingLease, request, (error) => {
+      if (this.session === session && stagingLease !== undefined && stagingLease.turnId === undefined) {
+        this.staging.defer(stagingLease);
+        for (const id of stagingLease.mediaAttachmentIds) this.staging.releaseRecalled([id]);
+        this.staging.releaseMedia([], stagingLease.paths);
+      }
       this.handleSkillActivationError(session, error);
     });
   }
