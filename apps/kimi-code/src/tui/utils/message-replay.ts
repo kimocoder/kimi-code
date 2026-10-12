@@ -385,10 +385,6 @@ export function userSlashSkillPromptText(
   return args.trim().length > 0 ? `/${name} ${args}` : `/${name}`;
 }
 
-export function isInTurnOrigin(origin: PromptOrigin | undefined): boolean {
-  return origin !== undefined && 'inTurn' in origin && origin.inTurn === true;
-}
-
 export function pluginCommandFromOrigin(
   origin: PromptOrigin | undefined,
 ): PluginCommandProjection | undefined {

@@ -1234,7 +1234,7 @@ describe('KimiTUI resume message replay', () => {
     expect(transcript).not.toContain('expanded legacy instructions');
   });
 
-  it('keeps a steered bundled prompt in the current replay turn', async () => {
+  it('replays a steered bundled prompt using the existing turn rule', async () => {
     const driver = await replayIntoDriver([
       message('user', [{ type: 'text', text: 'first prompt' }], { origin: { kind: 'user' } }),
       message('assistant', [{ type: 'text', text: 'first answer' }]),
@@ -1263,7 +1263,7 @@ describe('KimiTUI resume message replay', () => {
       'first prompt',
       'steered /skill:review note',
     ]);
-    expect(users[1]!.turnId).toBe(users[0]!.turnId);
+    expect(users[1]!.turnId).not.toBe(users[0]!.turnId);
     expect(users[1]!.skillNames).toEqual(['review']);
   });
 

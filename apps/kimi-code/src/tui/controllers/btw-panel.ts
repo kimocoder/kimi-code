@@ -21,7 +21,7 @@ import {
   resolveOriginalCaptions,
   type ExtractionResult,
 } from '../utils/image-placeholder';
-import type { StagingLeaseTracker } from './staging-leases';
+import type { StagingLease, StagingLeaseTracker } from './staging-leases';
 import type { TUIState } from '../tui-state';
 
 const BTW_BUSY_NOTICE = 'Wait for /btw to finish before sending another question.';
@@ -224,6 +224,7 @@ export class BtwPanelController {
   ): Promise<void> {
     let extraction: ExtractionResult | undefined;
     let prepared: PreparedSkillActivations | undefined;
+    let lease: StagingLease | undefined;
     try {
       const ingestionWait = pendingMediaIngestions(
         prompt, this.imageStore, MEDIA_INGESTION_SUBMIT_WAIT_MS,
@@ -245,7 +246,7 @@ export class BtwPanelController {
             originalsDirForSession(session),
           )
         : prompt;
-      const lease = this.staging.create(
+      lease = this.staging.create(
         [
           ...new Set([...extraction.imageAttachmentIds, ...extraction.videoAttachmentIds]),
           ...prepared.mediaAttachmentIds,
@@ -256,21 +257,14 @@ export class BtwPanelController {
         agentId,
       );
       const request = session.promptWithSkills(input, prepared.skills);
-      this.staging.trackDispatch(lease, request, () => {
-        this.staging.defer(lease);
-      });
+      this.staging.trackDispatch(lease, request, () => {});
       await request;
     } catch (error) {
-      if (prepared !== undefined) this.host.releaseSkillArgumentMedia(prepared);
-      if (extraction !== undefined) {
-        this.staging.releaseRecalled([...extraction.imageAttachmentIds, ...extraction.videoAttachmentIds]);
-      }
-      if (
-        this.host.session === session &&
-        this.panelsByAgentId.get(agentId) === panel &&
-        this.host.state.editor.getText().length === 0
-      ) {
-        this.host.state.editor.setText(prompt);
+      if (lease === undefined) {
+        if (prepared !== undefined) this.host.releaseSkillArgumentMedia(prepared);
+        if (extraction !== undefined) {
+          this.staging.releaseMedia([...extraction.imageAttachmentIds, ...extraction.videoAttachmentIds], []);
+        }
       }
       throw error;
     }

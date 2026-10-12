@@ -1484,8 +1484,6 @@ export class KimiTUI {
   ): Promise<void> {
     if (this.btwPanelController.sendUserInput(text, activations)) return;
     if (this.state.appState.model.trim().length === 0) {
-      if (preExtracted !== undefined) this.queueSkillUserInput(text, activations, preExtracted);
-      else this.state.editor.setText(text);
       this.showError(LLM_NOT_SET_MESSAGE);
       return;
     }
@@ -1516,18 +1514,13 @@ export class KimiTUI {
         extraction = { ...preExtracted, imageAttachmentIds: [], videoAttachmentIds: [] };
       }
     } catch (error) {
-      if (this.state.editor.getText().length === 0) this.state.editor.setText(text);
       this.showError(`Failed to prepare media attachment: ${formatErrorMessage(error)}`);
       return;
     }
     if (!this.validateMediaCapabilities(extraction)) {
-      if (preExtracted !== undefined) this.queueSkillUserInput(text, activations, extraction);
-      else {
-        this.staging.releaseRecalled([
-          ...extraction.imageAttachmentIds, ...extraction.videoAttachmentIds,
-        ]);
-        if (this.state.editor.getText().length === 0) this.state.editor.setText(text);
-      }
+      this.staging.releaseMedia([
+        ...extraction.imageAttachmentIds, ...extraction.videoAttachmentIds,
+      ], []);
       return;
     }
     if (this.cacheHint.maybeInterceptOnSubmit(text, extraction, activations)) return;
@@ -1535,7 +1528,9 @@ export class KimiTUI {
     if (session === undefined) {
       session = await this.ensureSession();
       if (session === undefined) {
-        this.queueSkillUserInput(text, activations, extraction);
+        this.staging.releaseMedia([
+          ...extraction.imageAttachmentIds, ...extraction.videoAttachmentIds,
+        ], []);
         return;
       }
     }
@@ -1545,29 +1540,19 @@ export class KimiTUI {
       this.state.appState.streamingPhase !== 'idle' ||
       this.state.appState.isCompacting
     ) {
-      this.queueSkillUserInput(text, activations, extraction);
+      this.enqueueMessage(text, {
+        parts: extraction.hasMedia ? extraction.parts : undefined,
+        imageAttachmentIds: extraction.imageAttachmentIds,
+        videoAttachmentIds: extraction.videoAttachmentIds,
+        mediaSnapshots: extraction.mediaSnapshots,
+        inlineSkillActivations: activations,
+      });
+      this.updateQueueDisplay();
+      this.state.ui.requestRender();
       return;
     }
     this.beginSessionRequest();
-    void this.runInlineSkillActivations(session, text, activations, extraction).catch((error: unknown) => {
-      this.handleSkillActivationError(session, error);
-    });
-  }
-
-  private queueSkillUserInput(
-    text: string,
-    activations: readonly InlineSkillActivation[],
-    extraction: ExtractionResult,
-  ): void {
-    this.enqueueMessage(text, {
-      parts: extraction.hasMedia ? extraction.parts : undefined,
-      imageAttachmentIds: extraction.imageAttachmentIds,
-      videoAttachmentIds: extraction.videoAttachmentIds,
-      mediaSnapshots: extraction.mediaSnapshots,
-      inlineSkillActivations: activations,
-    });
-    this.updateQueueDisplay();
-    this.state.ui.requestRender();
+    this.runInlineSkillActivations(session, text, activations, extraction);
   }
 
   prepareSkillActivations(
@@ -1609,28 +1594,12 @@ export class KimiTUI {
     this.staging.releaseMedia([], prepared.stagingPaths);
   }
 
-  private async runInlineSkillActivations(
+  private runInlineSkillActivations(
     session: Session,
     text: string,
     activations: readonly InlineSkillActivation[],
     extraction: ReturnType<typeof extractMediaAttachments>,
-    queuedTail: readonly QueuedMessage[] = [],
-  ): Promise<void> {
-    const restoreInput = (): void => {
-      if (this.session !== session) return;
-      for (const message of queuedTail) message.manualOnly = true;
-      this.state.queuedMessages.unshift({
-        ...this.toQueuedMessage(text, {
-          parts: extraction.hasMedia ? extraction.parts : undefined,
-          imageAttachmentIds: extraction.imageAttachmentIds,
-          videoAttachmentIds: extraction.videoAttachmentIds,
-          mediaSnapshots: extraction.mediaSnapshots,
-          inlineSkillActivations: activations,
-        }),
-        manualOnly: true,
-      });
-      this.updateQueueDisplay();
-    };
+  ): void {
     let prepared: PreparedSkillActivations | undefined;
     let input: string | readonly PromptPart[];
     try {
@@ -1645,7 +1614,9 @@ export class KimiTUI {
         : text;
     } catch (error) {
       if (prepared !== undefined) this.releaseSkillArgumentMedia(prepared);
-      restoreInput();
+      this.staging.releaseMedia([
+        ...extraction.imageAttachmentIds, ...extraction.videoAttachmentIds,
+      ], []);
       this.failSessionRequest(`Failed to prepare media attachment: ${formatErrorMessage(error)}`);
       return;
     }
@@ -1657,7 +1628,7 @@ export class KimiTUI {
       prepared.stagingPaths,
       'user',
     );
-    const entry: TranscriptEntry = {
+    this.appendTranscriptEntry({
       id: nextTranscriptId(),
       kind: 'user',
       turnId: undefined,
@@ -1666,17 +1637,11 @@ export class KimiTUI {
       skillNames: activations.map((activation) => activation.skillName),
       imageAttachmentIds:
         extraction.imageAttachmentIds.length > 0 ? extraction.imageAttachmentIds : undefined,
-    };
-    this.appendTranscriptEntry(entry);
-    const request = session.promptWithSkills(input, prepared.skills);
-    this.staging.trackDispatch(stagingLease, request, () => {
-      if (this.session !== session) return;
-      this.removeTranscriptEntries([entry]);
-      this.staging.defer(stagingLease);
-      this.releaseSkillArgumentMedia(prepared);
-      restoreInput();
     });
-    await request;
+    const request = session.promptWithSkills(input, prepared.skills);
+    this.staging.trackDispatch(stagingLease, request, (error) => {
+      this.handleSkillActivationError(session, error);
+    });
   }
 
   private handleSkillActivationError(session: Session, error: unknown): void {
@@ -1868,12 +1833,7 @@ export class KimiTUI {
         mediaSnapshots: item.mediaSnapshots,
       };
       this.beginSessionRequest();
-      void this.runInlineSkillActivations(
-        session, item.text, item.inlineSkillActivations, extraction,
-        this.state.queuedMessages.filter((message) => message.mode !== 'bash'),
-      ).catch((error: unknown) => {
-        this.handleSkillActivationError(session, error);
-      });
+      this.runInlineSkillActivations(session, item.text, item.inlineSkillActivations, extraction);
       return;
     }
     const parts =
@@ -2126,20 +2086,17 @@ export class KimiTUI {
       this.steerMessage(session, items, (steered) => {
         for (const message of group) this.steeringQueuedMessages.delete(message);
         if (this.session !== session) return;
-        if (steered) {
+        if (steered || manual) {
           const done = new Set(group);
           this.state.queuedMessages = this.state.queuedMessages.filter((message) => !done.has(message));
-          this.updateQueueDisplay();
-          sendNext();
-          return;
         }
-        if (manual && batch.some((message) => message.inlineSkillActivations !== undefined)) {
-          for (const message of [...group, ...pending]) message.manualOnly = true;
+        if (!steered) {
+          this.staging.releaseQueued(group.filter((message) => !this.state.queuedMessages.includes(message)));
         }
-        this.staging.releaseQueued(group.filter((message) => !this.state.queuedMessages.includes(message)));
         this.updateQueueDisplay();
-        if (!manual) this.drainQueueIfIdle();
-      });
+        if (steered || manual) sendNext();
+        else this.drainQueueIfIdle();
+      }, manual);
     };
     sendNext();
   }
@@ -2171,15 +2128,11 @@ export class KimiTUI {
     this.drainOneQueuedMessage();
   }
 
-  /** `onSettled`, when given, runs once the steer settles. On a rejection its
-   *  staged media is first handed back to raw ownership and the user entries
-   *  added for it are removed, so the caller can keep the input queued
-   *  instead of losing it behind an error; a steer from a session that has
-   *  since been replaced is dropped with that session. */
   steerMessage(
     session: Session,
     input: readonly SteerInputItem[],
     onSettled?: (steered: boolean) => void,
+    manual = false,
   ): void {
     if (this.deferUserMessages || this.state.appState.isCompacting) {
       if (onSettled !== undefined) {
@@ -2259,21 +2212,21 @@ export class KimiTUI {
       );
     }
     this.staging.trackDispatch(stagingLease, request, (error) => {
-      if (onSettled !== undefined) {
-        if (this.session !== session) {
-          onSettled(false);
-          return;
-        }
-        this.staging.defer(stagingLease);
-        if (prepared !== undefined) this.releaseSkillArgumentMedia(prepared);
-        this.removeTranscriptEntries(steeredEntries);
-        onSettled(false);
+      if (this.session !== session) {
+        onSettled?.(false);
+        return;
       }
       const message = `Failed to steer: ${formatErrorMessage(error)}`;
       if (startsNewTurn && this.streamingUI.getTurnContext().turnId === undefined) {
         this.failSessionRequest(message);
       } else {
         this.showError(message);
+      }
+      if (onSettled !== undefined) {
+        this.staging.defer(stagingLease);
+        if (prepared !== undefined) this.releaseSkillArgumentMedia(prepared);
+        if (prepared === undefined && !manual) this.removeTranscriptEntries(steeredEntries);
+        onSettled(false);
       }
     });
   }
@@ -2310,9 +2263,7 @@ export class KimiTUI {
 
   shiftQueuedMessage(): QueuedMessage | undefined {
     if (this.steeringQueuedMessages.size > 0) return undefined;
-    const index = this.state.queuedMessages.findIndex((message) => message.manualOnly !== true);
-    if (index === -1) return undefined;
-    return this.state.queuedMessages.splice(index, 1)[0];
+    return this.state.queuedMessages.shift();
   }
 
   pushTranscriptEntry(entry: TranscriptEntry): void {
@@ -3675,7 +3626,7 @@ export class KimiTUI {
         messages: queued,
         isCompacting: this.state.appState.isCompacting,
         isStreaming: this.state.appState.streamingPhase !== 'idle',
-        canSteerImmediately: this.canManuallySteer(),
+        canSteerImmediately: !this.deferUserMessages && !this.isSteeringQueuedMessages(),
       }),
     );
   }
@@ -4449,8 +4400,7 @@ export class KimiTUI {
 function isSteerableQueuedMessage(message: QueuedMessage): boolean {
   return (
     message.inlineSkillActivations === undefined &&
-    message.mode !== 'bash' &&
-    message.manualOnly !== true
+    message.mode !== 'bash'
   );
 }
 

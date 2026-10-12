@@ -84,7 +84,7 @@ describe('limitAgentReplayByTurns', () => {
     expect(JSON.stringify(limited)).not.toContain('prompt 14');
   });
 
-  it('keeps a steered skill input within its original user turn', () => {
+  it('counts a steered skill input using the existing replay turn rule', () => {
     const origin = {
       kind: 'user' as const,
       inTurn: true as const,
@@ -104,7 +104,7 @@ describe('limitAgentReplayByTurns', () => {
     const answer = assistant('review result', 4);
     const records = [userTurn('old prompt', 0), assistant('old answer', 1), currentTurn, steered, answer];
 
-    expect(limitAgentReplayByTurns(records, 1)).toEqual([currentTurn, steered, answer]);
+    expect(limitAgentReplayByTurns(records, 1)).toEqual([steered, answer]);
   });
 
   it('bounds replay volume when cron turns dominate the history', () => {

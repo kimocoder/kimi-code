@@ -36,7 +36,6 @@ import {
   countActiveBackgroundTasks,
   createReplayRenderContext,
   formatHookResultMessageForTranscript,
-  isInTurnOrigin,
   isTerminalBackgroundTask,
   isUserPromptSubmitHookPart,
   limitReplayRecordsByTurn,
@@ -432,9 +431,7 @@ export class SessionReplayRenderer {
       this.renderBundledPrompt(context, message);
       return;
     }
-    if (!isInTurnOrigin(message.origin)) {
-      this.advanceTurn(context);
-    }
+    this.advanceTurn(context);
     this.renderHookParts(context, message);
     this.host.appendTranscriptEntry(
       replayEntry(
@@ -460,9 +457,7 @@ export class SessionReplayRenderer {
     message: ContextMessage,
     hookResults: readonly ContextMessage[] = [],
   ): void {
-    if (!isInTurnOrigin(message.origin)) {
-      this.advanceTurn(context);
-    }
+    this.advanceTurn(context);
     this.registerBundledSkillActivations(context, message);
     for (const hookResult of hookResults) {
       this.renderHookResult(context, hookResult);
@@ -573,9 +568,7 @@ export class SessionReplayRenderer {
     if (sessionEventHandler.seenSkillActivationIds.has(skill.activationId)) return;
     context.skillActivationIds.add(skill.activationId);
     sessionEventHandler.seenSkillActivationIds.add(skill.activationId);
-    if (!isInTurnOrigin(message.origin)) {
-      this.advanceTurn(context);
-    }
+    this.advanceTurn(context);
     this.renderHookParts(context, message);
     this.host.appendTranscriptEntry({
       ...replayEntry(context, 'user', userSlashSkillPromptText(message, skill), 'plain'),

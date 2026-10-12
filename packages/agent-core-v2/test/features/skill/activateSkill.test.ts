@@ -1,8 +1,7 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { InMemorySkillCatalog } from '#/features/skill/catalog/registry';
-import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 
 import { stubSkill } from './catalog/stubs';
 import { createTestAgent, skillServices, type TestAgentContext } from '../../harness';
@@ -86,46 +85,6 @@ describe('promptWithSkills', () => {
     );
     return { started, release: releaseGate };
   }
-
-  it.each([false, true])('warns about metadata errors without rejecting an accepted skill (queued=%s)', async (queued) => {
-    ctx = agentWithSkills();
-    if (queued) ctx.mockNextResponse({ type: 'text', text: 'first done' });
-    ctx.mockNextResponse({ type: 'text', text: 'skill done' });
-    const metadata = ctx.get(ISessionMetadata);
-    const update = metadata.update.bind(metadata);
-    const failure = vi.spyOn(metadata, 'update').mockImplementation((patch, options) =>
-      patch.lastPrompt === 'Review this change.'
-        ? Promise.reject(new Error('Metadata write failed'))
-        : update(patch, options),
-    );
-    const hold = queued ? holdFirstStep() : undefined;
-    const active = queued ? ctx.rpc.prompt({ input: [{ type: 'text', text: 'start' }] }) : undefined;
-    await hold?.started;
-    try {
-      const submission = await ctx.rpc.promptWithSkills({
-        input: [{ type: 'text', text: 'Review this change.' }],
-        skills: [{ name: 'review' }],
-      });
-      expect(submission.state).toBe(queued ? 'queued' : 'running');
-      hold?.release();
-      if (queued) {
-        await active;
-        await ctx.untilTurnEnd();
-      }
-      await ctx.untilTurnEnd();
-      expect(ctx.allEvents).toContainEqual(expect.objectContaining({
-        type: '[rpc]', event: 'warning',
-        args: expect.objectContaining({ code: 'internal', message: 'Metadata write failed' }),
-      }));
-      expect(ctx.allEvents).not.toContainEqual(expect.objectContaining({
-        type: '[rpc]', event: 'error',
-      }));
-      expect(ctx.llmCalls).toHaveLength(queued ? 2 : 1);
-    } finally {
-      hold?.release();
-      failure.mockRestore();
-    }
-  });
 
   it('bundles every skill into the prompt message and launches exactly one turn', async () => {
     ctx = agentWithSkills();

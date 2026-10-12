@@ -907,7 +907,7 @@ describe('KimiTUI message flow', () => {
     ]);
   });
 
-  it('removes the user entry when the grouped submission is rejected (v2 engine)', async () => {
+  it('keeps submitted skill history when the grouped submission is rejected (v2 engine)', async () => {
     const session = makeSession({
       id: 'ses-lazy',
       listSkills: vi.fn(async () => [
@@ -943,7 +943,9 @@ describe('KimiTUI message flow', () => {
     await vi.waitFor(() => {
       expect(driver.state.appState.streamingPhase).toBe('idle');
     });
-    expect(driver.state.transcriptEntries.filter((entry) => entry.kind === 'user')).toHaveLength(0);
+    expect(driver.state.transcriptEntries.filter((entry) => entry.kind === 'user')).toMatchObject([
+      { content: 'please /skill:review', skillNames: ['review'] },
+    ]);
   });
 
   it('renders a bundled replay submission as a single turn', async () => {
@@ -3915,7 +3917,7 @@ command = "vim"
     });
   });
 
-  it.each(['', 'keep this draft'])('retains a timed-out skill video without replacing a later draft (%s)', async (nextDraft) => {
+  it.each(['', 'keep this draft'])('keeps a timed-out skill video in input history without changing the editor (%s)', async (nextDraft) => {
     const session = makeSession({
       listSkills: vi.fn(async () => [
         { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
@@ -3947,7 +3949,7 @@ command = "vim"
 
       await vi.advanceTimersByTimeAsync(1);
       expect(stripSgr(renderTranscript(driver))).toContain('still uploading');
-      expect(driver.state.editor.getText()).toBe(nextDraft || input);
+      expect(driver.state.editor.getText()).toBe(nextDraft);
       expect(driver.state.appState.streamingPhase).toBe('idle');
       expect(session.promptWithSkills).not.toHaveBeenCalled();
       finishIngestion();
@@ -3957,7 +3959,7 @@ command = "vim"
       driver.state.editor.handleInput('\u001B[A');
       expect(driver.state.editor.getText()).toBe(input);
       driver.state.editor.handleInput('\u001B[B');
-      expect(driver.state.editor.getText()).toBe(nextDraft || input);
+      expect(driver.state.editor.getText()).toBe(nextDraft);
       expect(imageStore.get(attachment.id)?.fileId).toBe('file-timed-out');
     } finally {
       finishIngestion();
@@ -4091,7 +4093,7 @@ command = "vim"
     expect(driver.state.queuedMessages).toEqual([]);
   });
 
-  it('retains a skill input when media preparation fails and normalizes it again on retry', async () => {
+  it('recalls a skill preparation failure from input history', async () => {
     const session = makeSession({
       listSkills: vi.fn(async () => [
         { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
@@ -4104,12 +4106,16 @@ command = "vim"
     const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
     const attachment = imageStore.addVideo('video/mp4', '/tmp/clip.mp4');
     const text = `watch /skill:review ${attachment.placeholder}`;
-
-    driver.handleUserInput(text);
+    driver.persistInputHistory = vi.fn(async (input) => { driver.state.editor.addToHistory(input); });
+    driver.state.editor.setText(text);
+    driver.state.editor.handleInput('\r');
 
     expect(session.promptWithSkills).not.toHaveBeenCalled();
-    expect(driver.state.editor.getText()).toBe(text);
+    expect(driver.state.editor.getText()).toBe('');
+    expect(driver.state.queuedMessages).toEqual([]);
     imageStore.completeVideo(attachment, { fileId: 'file-retried-skill' });
+    driver.state.editor.handleInput('\u001B[A');
+    expect(driver.state.editor.getText()).toBe(text);
     driver.state.editor.handleInput('\r');
     await vi.waitFor(() => {
       expect(session.promptWithSkills).toHaveBeenCalledWith([
@@ -4121,82 +4127,44 @@ command = "vim"
     await vi.waitFor(() => { expect(harness.deleteFile).toHaveBeenCalledWith('file-retried-skill'); });
   });
 
-  it.each([
-    { input: 'check /skill:review', errorMessage: 'Skill unavailable' },
-    { input: '/skill:review', errorMessage: 'Prompt blocked by UserPromptSubmit hook' },
-    { input: 'check /skill:review', errorMessage: 'Prompt blocked by UserPromptSubmit hook' },
-    { input: '/skill:review /skill:security', errorMessage: 'Prompt blocked by UserPromptSubmit hook' },
-  ])('recalls a rejected skill prompt with its media and reparses edited markers ($input, $errorMessage)', async ({ input, errorMessage }) => {
-    const promptWithSkills = vi.fn(async () => { throw new Error(errorMessage); });
-    const session = makeSession({
-      promptWithSkills,
-      listSkills: vi.fn(async () => [
-        { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
-        { name: 'security', description: 'Security skill', path: '/tmp/security', source: 'user' },
-      ]),
-    });
-    const { driver, harness } = await makeDriver(session);
-    await (
-      driver as unknown as { refreshSkillCommands(s: unknown): Promise<void> }
-    ).refreshSkillCommands(session);
-    const imageStore = (driver as unknown as { imageStore: ImageAttachmentStore }).imageStore;
-    const attachment = imageStore.addImage(new Uint8Array([0xaa]), 'image/png', 1, 1);
-    attachment.fileId = 'file-recalled-skill';
-    attachment.fileExpiresAt = Date.now() + 60 * 60 * 1000;
-    const text = `${input} ${attachment.placeholder}`;
-    driver.handleUserInput(text);
-    await vi.waitFor(() => {
-      expect(driver.state.queuedMessages).toContainEqual(expect.objectContaining({ text }));
-      expect(driver.state.appState.streamingPhase).toBe('idle');
-    });
-    expect(driver.state.livePane.mode).toBe('idle');
-    expect(driver.state.transcriptEntries.filter((entry) => entry.kind === 'user')).toEqual([]);
-    expect(stripSgr(renderTranscript(driver))).toContain(errorMessage);
-    expect(harness.deleteFile).not.toHaveBeenCalled();
-
-    driver.state.editor.setText('NEXT_CHANGE');
-    driver.state.editor.handleInput('\r');
-    await vi.waitFor(() => { expect(session.prompt).toHaveBeenCalledOnce(); });
-    driver.handleUserInput('QUEUE_TAIL');
-    driver.sessionEventHandler.handleEvent(
-      { type: 'turn.started', agentId: 'main', turnId: 1, origin: { kind: 'user' } } as Event,
-      () => {},
-    );
-    driver.sessionEventHandler.handleEvent(
-      { type: 'turn.ended', agentId: 'main', turnId: 1, reason: 'completed' } as Event,
-      (item) => { driver.sendQueuedMessage(session, item); },
-    );
-    await vi.waitFor(() => { expect(session.prompt).toHaveBeenCalledTimes(2); });
-    expect(session.prompt).toHaveBeenNthCalledWith(2, 'QUEUE_TAIL', { promptId: undefined });
-    driver.sessionEventHandler.handleEvent(
-      { type: 'turn.started', agentId: 'main', turnId: 2, origin: { kind: 'user' } } as Event,
-      () => {},
-    );
-    driver.sessionEventHandler.handleEvent(
-      { type: 'turn.ended', agentId: 'main', turnId: 2, reason: 'completed' } as Event,
-      (item) => { driver.sendQueuedMessage(session, item); },
-    );
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(promptWithSkills).toHaveBeenCalledTimes(1);
-    expect(driver.state.queuedMessages).toContainEqual(expect.objectContaining({ text }));
-    expect(harness.deleteFile).not.toHaveBeenCalled();
-
-    driver.state.editor.onUpArrowEmpty?.();
-
-    expect(driver.state.editor.getText()).toBe(text);
-    expect(driver.state.queuedMessages).toEqual([]);
-    const edited = `check ${attachment.placeholder}`;
-    driver.state.editor.setText(edited);
-    driver.state.editor.handleInput('\r');
-    expect(session.prompt).toHaveBeenCalledWith([
-      { type: 'text', text: 'check ' },
-      { type: 'image_url', imageUrl: { url: 'kimi-file://file-recalled-skill' } },
-    ], { promptId: expect.any(String) });
-    expect(promptWithSkills).toHaveBeenCalledTimes(1);
-    emitTurn(driver, 1);
-    await vi.waitFor(() => { expect(harness.deleteFile).toHaveBeenCalledWith('file-recalled-skill'); });
-    expect(harness.deleteFile).toHaveBeenCalledTimes(1);
-  });
+  it.each(['/skill:review file.ts', 'check /skill:review file.ts'])(
+    'retries a failed skill from input history without requeuing (%s)',
+    async (input) => {
+      const session = makeSession({
+        promptWithSkills: vi.fn().mockRejectedValueOnce(new Error('Skill unavailable')).mockResolvedValue(undefined),
+        listSkills: vi.fn(async () => [
+          { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
+          { name: 'security', description: 'Security skill', path: '/tmp/security', source: 'user' },
+        ]),
+      });
+      const { driver } = await makeDriver(session);
+      await (
+        driver as unknown as { refreshSkillCommands(s: unknown): Promise<void> }
+      ).refreshSkillCommands(session);
+      driver.persistInputHistory = vi.fn(async (text) => { driver.state.editor.addToHistory(text); });
+      driver.state.editor.setText(input);
+      driver.state.editor.handleInput('\r');
+      await vi.waitFor(() => {
+        expect(driver.state.appState.streamingPhase).toBe('idle');
+        expect(stripSgr(renderTranscript(driver))).toContain('Skill unavailable');
+      });
+      expect(driver.state.queuedMessages).toEqual([]);
+      expect(driver.state.editor.getText()).toBe('');
+      expect(driver.state.transcriptEntries).toContainEqual(expect.objectContaining({
+        kind: 'user', content: input, skillNames: ['review'],
+      }));
+      driver.state.editor.handleInput('\u001B[A');
+      expect(driver.state.editor.getText()).toBe(input);
+      const edited = input.replace('/skill:review', '/skill:security');
+      driver.state.editor.setText(edited);
+      driver.state.editor.handleInput('\r');
+      const skills = input.startsWith('/skill:')
+        ? [{ name: 'security', args: 'file.ts' }]
+        : [{ name: 'security' }];
+      expect(session.promptWithSkills).toHaveBeenLastCalledWith(edited, skills);
+      expect(driver.state.queuedMessages).toEqual([]);
+    },
+  );
 
   it.each(['enter', 'queued'])('ignores a skill rejection after switching sessions (%s)', async (delivery) => {
     let rejectSkill!: (error: unknown) => void;
@@ -4294,7 +4262,7 @@ command = "vim"
     expect(driver.state.queuedMessages).toEqual([]);
   });
 
-  it('holds the queued tail of a rejected skill without blocking later ordinary input', async () => {
+  it('keeps the ordinary queued tail eligible after a skill failure', async () => {
     let rejectSkill!: (error: unknown) => void;
     const held = new Promise<void>((_resolve, reject) => { rejectSkill = reject; });
     const promptWithSkills = vi.fn(() => held);
@@ -4327,17 +4295,9 @@ command = "vim"
       (item) => { driver.sendQueuedMessage(session, item); },
     );
     await vi.waitFor(() => { expect(session.prompt).toHaveBeenCalledTimes(2); });
-    expect(session.prompt).toHaveBeenLastCalledWith('OUTSIDE', { promptId: undefined });
-    expect(driver.state.queuedMessages.map((item) => item.text)).toEqual([
-      '/skill:review FIRST', 'QUEUED_TAIL',
-    ]);
-    promptWithSkills.mockResolvedValue(undefined);
-    driver.streamingUI.setTurnId('3');
-    driver.state.editor.onCtrlS?.();
-    await vi.waitFor(() => { expect(driver.state.queuedMessages).toEqual([]); });
-    expect(promptWithSkills).toHaveBeenCalledTimes(2);
-    expect(session.steer).toHaveBeenCalledOnce();
-    expect(session.steer).toHaveBeenCalledWith('QUEUED_TAIL');
+    expect(session.prompt).toHaveBeenLastCalledWith('QUEUED_TAIL', { promptId: undefined });
+    expect(driver.state.queuedMessages.map((item) => item.text)).toEqual(['OUTSIDE']);
+    expect(promptWithSkills).toHaveBeenCalledOnce();
   });
 
   it('keeps queued bash dispatch unchanged after a skill rejection', async () => {
@@ -4381,80 +4341,7 @@ command = "vim"
     expect(runShellCommand).toHaveBeenCalledWith('echo BASH_TAIL', expect.objectContaining({ commandId: expect.any(String) }));
     expect(session.prompt).toHaveBeenCalledOnce();
     expect(promptWithSkills).toHaveBeenCalledOnce();
-    expect(driver.state.queuedMessages.map((item) => item.text)).toEqual(['/skill:review FIRST']);
-  });
-
-  it.each(['tower', 'wait-for'])('does not auto-steer a failed plain suffix of a skill batch (%s)', async (mode) => {
-    const session = makeSession({
-      steer: vi.fn().mockRejectedValueOnce(new Error('Tail rejected')).mockResolvedValue(undefined),
-      listSkills: vi.fn(async () => [
-        { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
-      ]),
-    });
-    const { driver } = await makeDriver(session);
-    await (
-      driver as unknown as { refreshSkillCommands(s: unknown): Promise<void> }
-    ).refreshSkillCommands(session);
-    driver.state.appState.streamingPhase = 'waiting';
-    driver.streamingUI.setTurnId('1');
-    driver.handleUserInput('/skill:review PREFIX');
-    driver.handleUserInput('TAIL');
-    driver.state.editor.onCtrlS?.();
-    await vi.waitFor(() => { expect(session.steer).toHaveBeenCalledOnce(); });
-    expect(session.promptWithSkills).toHaveBeenCalledOnce();
-    expect(driver.state.queuedMessages.map((item) => item.text)).toEqual(['TAIL']);
-    if (mode === 'tower') driver.state.appState.towerMode = true;
-    else startWaitFor(driver);
-    driver.handleUserInput('NEW_INPUT');
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(session.steer).toHaveBeenCalledOnce();
-    expect(driver.state.queuedMessages.map((item) => item.text)).toEqual(['TAIL', 'NEW_INPUT']);
-    driver.state.editor.onCtrlS?.();
-    await vi.waitFor(() => { expect(driver.state.queuedMessages).toEqual([]); });
-    expect(session.steer).toHaveBeenCalledTimes(2);
-    expect(session.steer).toHaveBeenLastCalledWith('TAIL\n\nNEW_INPUT');
-    expect(session.promptWithSkills).toHaveBeenCalledOnce();
-  });
-
-  it('requires an explicit retry for a rejected skill steer', async () => {
-    const promptWithSkills = vi.fn<() => Promise<void>>()
-      .mockRejectedValueOnce(new Error('Prompt blocked by UserPromptSubmit hook'))
-      .mockResolvedValue(undefined);
-    const session = makeSession({
-      promptWithSkills,
-      listSkills: vi.fn(async () => [
-        { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
-      ]),
-    });
-    const { driver } = await makeDriver(session);
-    await (
-      driver as unknown as { refreshSkillCommands(s: unknown): Promise<void> }
-    ).refreshSkillCommands(session);
-    driver.state.appState.streamingPhase = 'waiting';
-    driver.streamingUI.setTurnId('1');
-    driver.state.editor.setText('/skill:review check');
-    driver.state.editor.onCtrlS?.();
-    await vi.waitFor(() => {
-      expect(driver.state.queuedMessages[0]).toMatchObject({ text: '/skill:review check', manualOnly: true });
-    });
-    driver.sessionEventHandler.handleEvent(
-      { type: 'turn.ended', agentId: 'main', turnId: 1, reason: 'completed' } as Event,
-      (item) => { driver.sendQueuedMessage(session, item); },
-    );
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(promptWithSkills).toHaveBeenCalledOnce();
-    driver.state.editor.setText('NEXT_CHANGE');
-    driver.state.editor.handleInput('\r');
-    driver.sessionEventHandler.handleEvent(
-      { type: 'turn.started', agentId: 'main', turnId: 2, origin: { kind: 'user' } } as Event,
-      () => {},
-    );
-    driver.state.editor.onCtrlS?.();
-    await vi.waitFor(() => { expect(driver.state.queuedMessages).toEqual([]); });
-    expect(promptWithSkills).toHaveBeenCalledTimes(2);
-    expect(promptWithSkills).toHaveBeenLastCalledWith(
-      '/skill:review check', [{ name: 'review', args: 'check' }], { steerIfActive: true },
-    );
+    expect(driver.state.queuedMessages.map((item) => item.text)).toEqual([]);
   });
 
   it('keeps dispatched skill media alive when the remaining queue is discarded', async () => {
@@ -4527,13 +4414,14 @@ command = "vim"
     });
     expect(driver.state.appState.streamingPhase).toBe('idle');
     expect(driver.state.livePane.mode).toBe('idle');
-    expect(driver.state.queuedMessages.map((item) => item.text)).toEqual([text, 'later']);
-    expect(session.steer).toHaveBeenCalledOnce();
+    expect(driver.state.queuedMessages).toEqual([]);
+    expect(session.steer).toHaveBeenCalledTimes(2);
+    expect(session.steer).toHaveBeenLastCalledWith('later');
     expect(session.promptWithSkills).not.toHaveBeenCalled();
     expect(session.prompt).not.toHaveBeenCalled();
   });
 
-  it('restores idle when skill submission rejects after the previous turn ends during Ctrl-S delivery', async () => {
+  it.each(['/skill:review keep-me', 'check /skill:review keep-me'])('keeps submitted skill input after Ctrl-S rejection (%s)', async (input) => {
     const session = makeSession({
       promptWithSkills: vi.fn(async () => { throw new Error('Skill unavailable'); }),
       listSkills: vi.fn(async () => [
@@ -4547,7 +4435,7 @@ command = "vim"
     driver.state.appState.streamingPhase = 'waiting';
     driver.streamingUI.setTurnId('1');
     driver.handleUserInput('accepted prefix');
-    driver.handleUserInput('/skill:review keep-me');
+    driver.handleUserInput(input);
     driver.handleUserInput('later');
     vi.mocked(session.steer).mockImplementation(async () => {
       driver.sessionEventHandler.handleEvent(
@@ -4563,31 +4451,52 @@ command = "vim"
     });
     expect(driver.state.appState.streamingPhase).toBe('idle');
     expect(driver.state.livePane.mode).toBe('idle');
-    expect(driver.state.queuedMessages.map((item) => item.text)).toEqual([
-      '/skill:review keep-me', 'later',
-    ]);
-    expect(driver.state.transcriptEntries).not.toContainEqual(expect.objectContaining({
-      kind: 'user', content: '/skill:review keep-me',
+    expect(driver.state.queuedMessages).toEqual([]);
+    expect(driver.state.transcriptEntries).toContainEqual(expect.objectContaining({
+      kind: 'user', content: input, skillNames: ['review'],
     }));
-    expect(session.steer).toHaveBeenCalledOnce();
+    expect(driver.state.transcriptEntries).toContainEqual(expect.objectContaining({
+      kind: 'user', content: 'later',
+    }));
+    expect(session.steer).toHaveBeenCalledTimes(2);
+    expect(session.steer).toHaveBeenLastCalledWith('later');
     expect(session.promptWithSkills).toHaveBeenCalledOnce();
     expect(session.prompt).not.toHaveBeenCalled();
-    expect(driver.state.editor.onUpArrowEmpty?.()).toBe(true);
-    expect(driver.state.editor.getText()).toBe('later');
   });
 
-  it('serializes Ctrl-S inputs and keeps a failed suffix without resending the accepted prefix', async () => {
+  it('keeps submitted ordinary Ctrl-S input when the request fails', async () => {
+    const session = makeSession({
+      steer: vi.fn(async () => { throw new Error('Input unavailable'); }),
+    });
+    const { driver } = await makeDriver(session);
+    driver.state.appState.streamingPhase = 'waiting';
+    driver.streamingUI.setTurnId('1');
+    driver.state.editor.setText('keep this input');
+
+    driver.state.editor.onCtrlS?.();
+
+    await vi.waitFor(() => {
+      expect(stripSgr(renderTranscript(driver))).toContain('Input unavailable');
+    });
+    expect(session.steer).toHaveBeenCalledWith('keep this input');
+    expect(driver.state.queuedMessages).toEqual([]);
+    expect(driver.state.transcriptEntries).toContainEqual(expect.objectContaining({
+      kind: 'user', content: 'keep this input',
+    }));
+  });
+
+  it('serializes Ctrl-S inputs without blocking later submissions after a skill failure', async () => {
     let rejectSkill!: (error: unknown) => void;
     const held = new Promise<void>((_resolve, reject) => { rejectSkill = reject; });
     const sent: string[] = [];
-    const promptWithSkills = vi.fn((input: unknown) => {
-      sent.push(String(input));
-      return held;
-    });
-    const steer = vi.fn(async (input: unknown) => { sent.push(String(input)); });
+    const promptWithSkills = vi.fn(async (input: unknown) => { sent.push(String(input)); })
+      .mockImplementationOnce((input: unknown) => {
+        sent.push(String(input));
+        return held;
+      });
     const session = makeSession({
       promptWithSkills,
-      steer,
+      steer: vi.fn(async (input: unknown) => { sent.push(String(input)); }),
       listSkills: vi.fn(async () => [
         { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
         { name: 'security', description: 'Security skill', path: '/tmp/security', source: 'user' },
@@ -4604,44 +4513,32 @@ command = "vim"
     driver.handleUserInput('later');
     driver.state.editor.setText('draft /skill:security');
     driver.state.editor.onCtrlS?.();
-    await vi.waitFor(() => { expect(promptWithSkills).toHaveBeenCalledTimes(1); });
+    await vi.waitFor(() => { expect(promptWithSkills).toHaveBeenCalledOnce(); });
     expect(sent).toEqual(['first', 'check /skill:review']);
-
     driver.state.appState.streamingPhase = 'idle';
     driver.handleUserInput('newer');
-
     expect(session.prompt).not.toHaveBeenCalled();
     rejectSkill(new Error('Skill unavailable'));
     await vi.waitFor(() => {
-      expect(stripSgr(renderTranscript(driver))).toContain('Skill unavailable');
+      expect(sent).toEqual(['first', 'check /skill:review', 'later', 'draft /skill:security']);
+      expect(driver.state.queuedMessages.map((item) => item.text)).toEqual(['newer']);
     });
-    expect(driver.state.queuedMessages.map((item) => item.text)).toEqual([
-      'check /skill:review', 'later', 'draft /skill:security', 'newer',
-    ]);
-    expect(sent).toEqual(['first', 'check /skill:review']);
-    expect(driver.state.editor.getText()).toBe('');
-    driver.state.appState.streamingPhase = 'waiting';
+    expect(stripSgr(renderTranscript(driver))).toContain('Skill unavailable');
+    expect(driver.state.transcriptEntries).toContainEqual(expect.objectContaining({
+      kind: 'user', content: 'check /skill:review', skillNames: ['review'],
+    }));
     driver.sessionEventHandler.handleEvent(
-      { type: 'turn.ended', agentId: 'main', turnId: 1, reason: 'completed' } as Event,
+      { type: 'turn.started', agentId: 'main', turnId: 2, origin: { kind: 'user' } } as Event,
+      () => {},
+    );
+    driver.sessionEventHandler.handleEvent(
+      { type: 'turn.ended', agentId: 'main', turnId: 2, reason: 'completed' } as Event,
       (item) => { driver.sendQueuedMessage(session, item); },
     );
     await vi.waitFor(() => { expect(session.prompt).toHaveBeenCalledOnce(); });
     expect(session.prompt).toHaveBeenCalledWith('newer', { promptId: undefined });
-    expect(driver.state.queuedMessages.map((item) => item.text)).toEqual([
-      'check /skill:review', 'later', 'draft /skill:security',
-    ]);
-    expect(sent).toEqual(['first', 'check /skill:review']);
-
-    promptWithSkills.mockImplementation(async (input: unknown) => { sent.push(String(input)); });
-    driver.state.appState.streamingPhase = 'waiting';
-    driver.state.editor.onCtrlS?.();
-    await vi.waitFor(() => { expect(driver.state.queuedMessages).toEqual([]); });
-    expect(sent).toEqual([
-      'first', 'check /skill:review', 'check /skill:review', 'later', 'draft /skill:security',
-    ]);
-    expect(promptWithSkills).toHaveBeenLastCalledWith(
-      'draft /skill:security', [{ name: 'security' }], { steerIfActive: true },
-    );
+    expect(promptWithSkills).toHaveBeenCalledTimes(2);
+    expect(driver.state.queuedMessages).toEqual([]);
   });
 
   it.each(['enter', 'ctrl-s'])('keeps skill media args and releases uploads on consumption (%s)', async (submission) => {
@@ -5772,7 +5669,7 @@ command = "vim"
     ]);
   });
 
-  it('keeps skill input and reports failed media argument materialization', async () => {
+  it('reports failed skill media argument materialization without requeuing', async () => {
     const session = makeSession({
       listSkills: vi.fn(async () => [
         { name: 'test', description: 'Test skill', path: '/tmp/test', source: 'user' },
@@ -5792,10 +5689,7 @@ command = "vim"
     expect(session.promptWithSkills).not.toHaveBeenCalled();
     expect(session.activateSkill).not.toHaveBeenCalled();
     expect(stripSgr(renderTranscript(driver))).toContain('Failed to prepare media attachment');
-    expect(driver.state.queuedMessages).toContainEqual(expect.objectContaining({
-      text, videoAttachmentIds: [missing.id],
-      inlineSkillActivations: [{ skillName: 'test', args: `look ${missing.placeholder}` }],
-    }));
+    expect(driver.state.queuedMessages).toEqual([]);
   });
 
   it('shows an error instead of throwing when plugin command media materialization fails', async () => {
@@ -6597,48 +6491,7 @@ command = "vim"
     }
   });
 
-  it.each(['closed', 'replaced'] as const)(
-    'does not restore a cancelled BTW skill into another recipient (%s)',
-    async (target) => {
-      let rejectSkill!: (error: Error) => void;
-      const request = new Promise<void>((_, reject) => { rejectSkill = reject; });
-      const session = makeSession({
-        listSkills: vi.fn(async () => [
-          { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
-        ]),
-        promptWithSkills: vi.fn(() => request),
-      });
-      const { driver } = await makeDriver(session);
-      await (
-        driver as unknown as { refreshSkillCommands(s: unknown): Promise<void> }
-      ).refreshSkillCommands(session);
-      await openBtwPanel(driver, session);
-      const panel = getMountedBtwPanel(driver);
-      panel.markDone();
-      driver.state.editor.setText('/skill:review old side question');
-      driver.state.editor.handleInput('\r');
-      await vi.waitFor(() => { expect(session.promptWithSkills).toHaveBeenCalledOnce(); });
-      driver.state.editor.onEscape?.();
-      expect(driver.state.btwPanelContainer.children).toHaveLength(0);
-      if (target === 'replaced') {
-        session.startBtw.mockResolvedValueOnce('agent-replacement');
-        await openBtwPanel(driver, session, 'new side question');
-      }
-      rejectSkill(new Error('Prompt cancelled before launch'));
-      await vi.waitFor(() => {
-        expect(stripSgr(panel.render(120).join('\n'))).toContain('Prompt cancelled before launch');
-      });
-      expect(driver.state.editor.getText()).toBe('');
-      if (target === 'replaced') {
-        expect(stripSgr(renderBtwPanel(driver))).toContain('new side question');
-        expect(stripSgr(renderBtwPanel(driver))).not.toContain('old side question');
-      }
-      expect(session.promptWithSkills).toHaveBeenCalledOnce();
-      expect(driver.state.queuedMessages).toHaveLength(0);
-    },
-  );
-
-  it('retains a rejected BTW skill image and reparses it on retry', async () => {
+  it('reports a BTW skill failure without refilling the editor', async () => {
     const session = makeSession({
       listSkills: vi.fn(async () => [
         { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
@@ -6660,29 +6513,13 @@ command = "vim"
     driver.state.editor.handleInput('\r');
     await vi.waitFor(() => {
       expect(stripSgr(renderBtwPanel(driver))).toContain('Prompt rejected');
-      expect(driver.state.editor.getText()).toBe(input);
+      expect(driver.state.editor.getText()).toBe('');
     });
-    expect(harness.deleteFile).not.toHaveBeenCalled();
-    driver.state.editor.setText(`inspect ${attachment.placeholder} /skill:review`);
-    driver.state.editor.handleInput('\r');
-    await vi.waitFor(() => {
-      expect(session.promptWithSkills).toHaveBeenLastCalledWith([
-        { type: 'text', text: 'inspect ' },
-        { type: 'image_url', imageUrl: { url: 'kimi-file://file-btw-retry' } },
-        { type: 'text', text: ' /skill:review' },
-      ], [{ name: 'review' }]);
-    });
-    driver.sessionEventHandler.handleEvent({
-      type: 'turn.started', sessionId: session.id, agentId: 'agent-btw',
-      turnId: 1, origin: { kind: 'user' },
-    } as Event, () => {});
-    driver.sessionEventHandler.handleEvent({
-      type: 'turn.ended', sessionId: session.id, agentId: 'agent-btw',
-      turnId: 1, reason: 'completed',
-    } as Event, () => {});
     await vi.waitFor(() => {
       expect(harness.deleteFile).toHaveBeenCalledExactlyOnceWith('file-btw-retry');
     });
+    expect(driver.state.queuedMessages).toEqual([]);
+    expect(session.promptWithSkills).toHaveBeenCalledOnce();
   });
 
   it('activates inline skills in the initial /btw prompt (v2 engine)', async () => {
@@ -7734,38 +7571,6 @@ command = "vim"
     );
 
     expect(stripSgr(renderTranscript(driver))).toContain('Interrupted by user');
-  });
-
-  it.each(['warning', 'error'] as const)('preserves active tools only for nonfatal notices (%s)', async (type) => {
-    const { driver, session } = await makeDriver();
-    const sendQueued = vi.fn();
-    driver.sessionEventHandler.handleEvent({
-      type: 'turn.started', sessionId: session.id, agentId: 'main', turnId: 1,
-      origin: { kind: 'user' },
-    } as Event, sendQueued);
-    driver.sessionEventHandler.handleEvent({
-      type: 'assistant.delta', sessionId: session.id, agentId: 'main', turnId: 1,
-      delta: 'Live response before notice',
-    } as Event, sendQueued);
-    driver.sessionEventHandler.handleEvent({
-      type: 'tool.call.started', sessionId: session.id, agentId: 'main', turnId: 1,
-      toolCallId: 'tc-metadata', name: 'Bash', args: { command: 'printf running' },
-    } as Event, sendQueued);
-    expect(driver.streamingUI.hasActiveToolCall('tc-metadata')).toBe(true);
-    driver.sessionEventHandler.handleEvent({
-      type, sessionId: session.id, agentId: 'main', code: 'internal',
-      message: 'Metadata write failed', retryable: type === 'error' ? true : undefined,
-    } as Event, sendQueued);
-    expect(driver.streamingUI.hasActiveToolCall('tc-metadata')).toBe(type === 'warning');
-    expect(driver.streamingUI.getTurnContext().turnId).toBe('1');
-    expect(stripSgr(renderTranscript(driver))).toContain('Metadata write failed');
-    if (type === 'warning') {
-      driver.sessionEventHandler.handleEvent({
-        type: 'tool.result', sessionId: session.id, agentId: 'main', turnId: 1,
-        toolCallId: 'tc-metadata', output: 'running', isError: false,
-      } as Event, sendQueued);
-      expect(stripSgr(renderTranscript(driver))).toContain('running');
-    }
   });
 
   it('appends the /export-debug-zip hint beneath session error messages', async () => {
