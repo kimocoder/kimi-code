@@ -10069,59 +10069,6 @@ command = "vim"
     expect(transcript).not.toContain('ctrl+o expand');
   });
 
-  it.each(['ordinary input', '/skill:review file.ts', 'check /skill:review file.ts'])(
-    'accepts another input after UserPromptSubmit blocks an idle submission (%s)',
-    async (input) => {
-      const session = makeSession({
-        listSkills: vi.fn(async () => [
-          { name: 'review', description: 'Review skill', path: '/tmp/review', source: 'user' },
-        ]),
-      });
-      const { driver } = await makeDriver(session);
-      await (
-        driver as unknown as { refreshSkillCommands(session: unknown): Promise<void> }
-      ).refreshSkillCommands(session);
-      driver.handleUserInput(input);
-      await vi.waitFor(() => {
-        expect(session.prompt.mock.calls.length + session.promptWithSkills.mock.calls.length).toBe(1);
-      });
-      expect(driver.state.appState.streamingPhase).toBe('waiting');
-      driver.sessionEventHandler.handleEvent(
-        {
-          type: 'hook.result',
-          agentId: 'main',
-          hookEvent: 'UserPromptSubmit',
-          content: 'Input blocked',
-          blocked: true,
-        } as Event,
-        (item) => { driver.sendQueuedMessage(session, item); },
-      );
-      expect(driver.state.appState.streamingPhase).toBe('idle');
-      expect(driver.state.transcriptEntries).toContainEqual(expect.objectContaining({
-        kind: 'user', content: input,
-      }));
-      driver.handleUserInput('continue now');
-      expect(session.prompt).toHaveBeenLastCalledWith('continue now', { promptId: undefined });
-      expect(driver.state.queuedMessages).toEqual([]);
-    },
-  );
-
-  it.each([
-    { hookEvent: 'UserPromptSubmit', blocked: false, active: false },
-    { hookEvent: 'PreToolUse', blocked: true, active: false },
-    { hookEvent: 'UserPromptSubmit', blocked: true, active: true },
-  ])('keeps waiting for a hook result that does not reject the idle submission ($hookEvent, blocked=$blocked, active=$active)', async ({ hookEvent, blocked, active }) => {
-    const { driver } = await makeDriver();
-    driver.state.appState.streamingPhase = 'waiting';
-    if (active) driver.streamingUI.setTurnId('1');
-    driver.sessionEventHandler.handleEvent(
-      { type: 'hook.result', agentId: 'main', hookEvent, content: 'Hook output', blocked } as Event,
-      () => {},
-    );
-    expect(driver.state.appState.streamingPhase).toBe('waiting');
-    expect(driver.streamingUI.hasActiveTurn()).toBe(active);
-  });
-
   it('renders hook results without XML tags', async () => {
     const { driver } = await makeDriver();
 

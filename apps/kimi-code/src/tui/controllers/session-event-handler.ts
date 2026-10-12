@@ -613,14 +613,6 @@ export class SessionEventHandler {
       content: formatHookResultMarkdown(event),
       hookResult: true,
     });
-    if (
-      event.hookEvent === 'UserPromptSubmit' &&
-      event.blocked === true &&
-      this.host.state.appState.streamingPhase === 'waiting' &&
-      !this.host.streamingUI.hasActiveTurn()
-    ) {
-      this.host.setAppState({ streamingPhase: 'idle' });
-    }
     this.host.patchLivePane({
       mode: 'idle',
       pendingApproval: null,
