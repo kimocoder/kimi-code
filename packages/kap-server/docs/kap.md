@@ -481,6 +481,7 @@ Fetch `GET /openapi.json` and `GET /asyncapi.json` for exact parameter and paylo
 | `POST /api/v1/sessions/{session_id}:undo` | `operator` | `baseline` | Remove `turn_id` and subsequent turns from conversation history |
 | `POST /api/v1/sessions/{session_id}:compact` | `operator` | `baseline` | Trigger manual context compaction (`instruction?`) |
 | `POST /api/v1/sessions/{session_id}:btw` | `operator` | `baseline` | Spawn a read-only side-chat agent (`agent_id`) forked from current context |
+| `POST /api/v1/sessions/{session_id}/agents/{agent_id}:close` | `operator` | `agent_close` | Close and remove a `btw` side-chat agent (`40939` if not a closable `btw` agent) |
 | `POST /api/v1/sessions/{session_id}:reload` | `operator` | `baseline` | Close and reload in-memory session state from disk |
 | `POST /api/v1/sessions/{session_id}:takeover` | `operator` | `baseline` | Break a stale cross-process session lock (`40931`) |
 | `POST /api/v1/sessions/{session_id}/export` | `operator` | `baseline` | Export session archive as ZIP |

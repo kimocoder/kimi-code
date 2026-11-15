@@ -582,6 +582,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       releaseQuiescence?.();
     }
     if (this.roster.get(agent.agentId) === managed) this.roster.delete(agent.agentId);
+    detachInteractionAgent(agent.agentId, this.ctx.sessionId);
     this.onDidCloseEmitter.fire(agent);
     if (stopError !== undefined) throw stopError;
   }

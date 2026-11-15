@@ -38,6 +38,7 @@ export function registerMetaRoute(app: RouteHost, opts: MetaRouteOptions): void 
       mcp: true as const,
       tasks: true as const,
       access_tokens: opts.accessTokensEnabled !== false,
+      agent_close: true as const,
     }),
     server_id: opts.serverId,
     started_at: opts.startedAt,
