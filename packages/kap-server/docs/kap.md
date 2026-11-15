@@ -477,6 +477,7 @@ Fetch `GET /openapi.json` and `GET /asyncapi.json` for exact parameter and paylo
 | `POST /api/v1/sessions:archive` / `:restore` | `operator` | `baseline` | Batch archive or restore sessions by `ids` |
 | `POST /api/v1/sessions/{session_id}:archive` / `:restore` / `:delete` | `operator` | `baseline` | Archive, restore, or permanently delete one session |
 | `POST /api/v1/sessions/{session_id}:cancel` | `operator` | `baseline` | Cancel running turn (`agent_id?`, `include_background?`) |
+| `POST /api/v1/sessions/{session_id}:continue` | `operator` | `session_continue` | Resume the latest interrupted or failed turn without a new user message (`40940` if not continuable) |
 | `POST /api/v1/sessions/{session_id}:fork` | `operator` | `baseline` | Fork session up to optional `turn_index` into a new session (if forked mid-turn without `turn_index`, copies completed turns plus the active user prompt, omitting in-flight partial output and queued prompts) |
 | `POST /api/v1/sessions/{session_id}:undo` | `operator` | `baseline` | Remove `turn_id` and subsequent turns from conversation history |
 | `POST /api/v1/sessions/{session_id}:compact` | `operator` | `baseline` | Trigger manual context compaction (`instruction?`) |

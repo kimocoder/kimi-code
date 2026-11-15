@@ -12,6 +12,7 @@ export const metaCapabilitiesSchema = z.object({
   tasks: z.literal(true),
   access_tokens: z.boolean(),
   agent_close: z.literal(true),
+  session_continue: z.literal(true),
 });
 
 export type MetaCapabilities = z.infer<typeof metaCapabilitiesSchema>;
