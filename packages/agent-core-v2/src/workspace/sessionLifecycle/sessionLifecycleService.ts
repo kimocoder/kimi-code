@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { rmSync } from 'node:fs';
-import { mkdtemp } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
 import { join } from 'pathe';
@@ -314,9 +314,15 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const workspaceId = this.workspaceId;
     const isEphemeral = opts.ephemeral === true;
     const sessionScope = sessionScopeOf(this.handlerScope, opts.sessionId);
+    if (isEphemeral) {
+      await sweepStaleEphemeralDirs();
+    }
     const sessionDir = isEphemeral
-      ? await mkdtemp(join(tmpdir(), `kimi-code-ephemeral-${opts.sessionId}-`))
+      ? await mkdtemp(join(tmpdir(), `${EPHEMERAL_DIR_PREFIX}${opts.sessionId}-`))
       : sessionDirOf(this.bootstrap.homeDir, this.handlerScope, opts.sessionId);
+    if (isEphemeral) {
+      await writeFile(join(sessionDir, EPHEMERAL_PID_FILE), `${process.pid}\n`, { mode: 0o600 }).catch(() => {});
+    }
     const metaScope = sessionScope;
     const dirs = workdir.dirs;
     try {
@@ -1193,6 +1199,47 @@ function isMissingFileError(error: unknown): boolean {
   if (unwrapped === null || typeof unwrapped !== 'object') return false;
   const code = (unwrapped as { readonly code?: unknown }).code;
   return code === 'ENOENT';
+}
+
+const EPHEMERAL_DIR_PREFIX = 'kimi-code-ephemeral-';
+const EPHEMERAL_PID_FILE = '.owner-pid';
+let sweptStaleEphemeralDirs = false;
+
+function isPidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+async function sweepStaleEphemeralDirs(): Promise<void> {
+  if (sweptStaleEphemeralDirs) return;
+  sweptStaleEphemeralDirs = true;
+  const root = tmpdir();
+  let entries: string[];
+  try {
+    entries = await readdir(root);
+  } catch {
+    return;
+  }
+  await Promise.all(
+    entries
+      .filter((name) => name.startsWith(EPHEMERAL_DIR_PREFIX))
+      .map(async (name) => {
+        const dirPath = join(root, name);
+        try {
+          const rawPid = (await readFile(join(dirPath, EPHEMERAL_PID_FILE), 'utf8')).trim();
+          const pid = Number.parseInt(rawPid, 10);
+          if (Number.isFinite(pid) && !isPidAlive(pid)) {
+            await rm(dirPath, { recursive: true, force: true });
+          }
+        } catch {
+        }
+      }),
+  );
 }
 
 function createSessionId(): string {

@@ -132,9 +132,16 @@ export class ToolResultTruncationService implements IAgentToolResultTruncationSe
   }
 
   isWireJournalPath(path: string): boolean {
-    const sessionsDir = normalize(join(this.bootstrap.homeDir, this.bootstrap.scope('sessions')));
     const normalized = normalize(path);
-    return normalized.startsWith(`${sessionsDir}/`) && basename(normalized) === AGENT_WIRE_RECORD_KEY;
+    if (basename(normalized) !== AGENT_WIRE_RECORD_KEY) return false;
+    const sessionsDir = normalize(join(this.bootstrap.homeDir, this.bootstrap.scope('sessions')));
+    if (normalized.startsWith(`${sessionsDir}/`)) return true;
+    const sessionCtx = this.session as ISessionContext | undefined;
+    if (sessionCtx?.ephemeral === true) {
+      const ephemRoot = normalize(sessionCtx.sessionDir);
+      return normalized.startsWith(`${ephemRoot}/`);
+    }
+    return false;
   }
 
   private async saveToolResult(

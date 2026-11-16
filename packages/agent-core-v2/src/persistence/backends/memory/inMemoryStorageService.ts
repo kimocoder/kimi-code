@@ -71,7 +71,7 @@ export class InMemoryStorageService implements IFileSystemStorageService {
   ): Promise<void> {
     options.signal?.throwIfAborted();
     this.bucket(scope).set(key, {
-      chunks: data.byteLength === 0 ? [] : [data],
+      chunks: data.byteLength === 0 ? [] : [data.slice()],
       byteLength: data.byteLength,
     });
     this.mtimes.set(this.keyFor(scope, key), Date.now());
@@ -88,7 +88,7 @@ export class InMemoryStorageService implements IFileSystemStorageService {
     for await (const chunk of source) {
       options.signal?.throwIfAborted();
       if (chunk.byteLength > 0) {
-        chunks.push(chunk);
+        chunks.push(chunk.slice());
         total += chunk.byteLength;
       }
     }
@@ -107,14 +107,14 @@ export class InMemoryStorageService implements IFileSystemStorageService {
     const existing = bucket.get(key);
     if (existing === undefined) {
       bucket.set(key, {
-        chunks: data.byteLength === 0 ? [] : [data],
+        chunks: data.byteLength === 0 ? [] : [data.slice()],
         byteLength: data.byteLength,
       });
       this.mtimes.set(this.keyFor(scope, key), Date.now());
       return;
     }
     if (data.byteLength > 0) {
-      existing.chunks.push(data);
+      existing.chunks.push(data.slice());
       existing.byteLength += data.byteLength;
     }
     this.mtimes.set(this.keyFor(scope, key), Date.now());

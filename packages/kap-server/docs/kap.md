@@ -469,7 +469,7 @@ Fetch `GET /openapi.json` and `GET /asyncapi.json` for exact parameter and paylo
 
 | Method & Path | Min Role | Gate | Summary |
 | --- | --- | --- | --- |
-| `POST /api/v1/sessions` | `operator` | `baseline` (`ephemeral` flag gated by `ephemeral_sessions`) | Create a session (`cwd` or `workspace_id`, optional `ephemeral: true` in-memory session, `title`, `metadata`, `agent_config`, `environment_id`; archiving/exporting ephemeral sessions returns `40941`) |
+| `POST /api/v1/sessions` | `operator` | `baseline` (`ephemeral` flag gated by `ephemeral_sessions`) | Create a session (`cwd` or `workspace_id`, optional `ephemeral: true` in-memory session, `title`, `metadata`, `agent_config`, `environment_id`; `:archive`, `:restore`, `:fork`, `:reload`, and `/export` on ephemeral sessions return `40941`) |
 | `GET /api/v1/sessions` | `viewer` | `baseline` | List/filter/group sessions (`flat` or `by_workspace`, `include=git`, `fields=id,archived`, pagination) |
 | `GET /api/v1/sessions/{session_id}` | `viewer` | `baseline` | Get one session object |
 | `POST /api/v1/sessions/{session_id}/profile` | `operator` | `baseline` | Update `title`, `metadata` (replaces all non-reserved custom metadata keys as a whole — submit the complete custom object), or main `agent_config` (`model`, `thinking`, `permission_mode`, `plan_mode`, `swarm_mode`, `tower_mode`, `goal`) |
