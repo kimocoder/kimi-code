@@ -106,6 +106,7 @@ export interface ConversationState {
   provisionalEnds: Record<string, TurnEnd>;
   recordsTurnEnds: boolean;
   trailingRejectedPrompt: boolean;
+  awaitingContinuationCompletion: boolean;
   latestPromptId?: string;
   stepParts: Record<string, number>;
   compaction?: CompactionDetails;
@@ -129,6 +130,7 @@ export function createConversationState(agentId: string, fork?: ConversationFork
     provisionalEnds: {},
     recordsTurnEnds: false,
     trailingRejectedPrompt: false,
+    awaitingContinuationCompletion: false,
     stepParts: {},
   };
 }
@@ -154,6 +156,7 @@ export function applyConversationRecord(state: ConversationState, record: WireRe
       if (typeof record['trigger'] === 'string') state.recordsTurnEnds = true;
       state.trailingRejectedPrompt = false;
       const promptId = stringField(record['promptId']);
+      state.awaitingContinuationCompletion = record['trigger'] === 'continue' && promptId === undefined;
       if (promptId !== undefined) state.latestPromptId = promptId;
       state.pendingPrompt = {
         turnNumber: numberField(record['turnId']),
@@ -199,7 +202,12 @@ export function applyConversationRecord(state: ConversationState, record: WireRe
           record['reason'] === 'blocked',
           time,
         );
+      } else {
+        state.awaitingContinuationCompletion = false;
       }
+      return;
+    case 'prompt.aborted':
+      state.awaitingContinuationCompletion = false;
       return;
     case 'interaction.request':
       applyInteractionRequest(state, record, time);
@@ -290,6 +298,7 @@ export function undoConversationTurns(state: ConversationState, count: number): 
   state.latestPromptId = undefined;
   state.pendingSteers = 0;
   state.trailingRejectedPrompt = false;
+  state.awaitingContinuationCompletion = false;
   return state;
 }
 
@@ -587,6 +596,10 @@ function applyPromptRejected(
     }
     return;
   }
+  if (!blocked && state.awaitingContinuationCompletion) {
+    state.awaitingContinuationCompletion = false;
+    return;
+  }
   state.trailingRejectedPrompt = true;
 }
 
@@ -717,6 +730,7 @@ function clearConversation(state: ConversationState): void {
   state.implicitlyEnded = {};
   state.provisionalEnds = {};
   state.trailingRejectedPrompt = false;
+  state.awaitingContinuationCompletion = false;
   state.stepParts = {};
   state.compaction = undefined;
 }

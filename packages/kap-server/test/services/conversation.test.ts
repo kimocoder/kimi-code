@@ -1313,4 +1313,42 @@ describe('conversation feed', () => {
     ]);
     expect(rejected.trailingRejectedPrompt).toBe(true);
   });
+
+  it('keeps a failed continuation turn continuable while rejecting subsequent failed submissions', () => {
+    const continuedFailed = fold([
+      turnPrompt(0, 'p1'),
+      userMessage('p1', 'work'),
+      turnEnded(0, 'cancelled'),
+      record('turn.prompt', {
+        turnId: 1,
+        promptId: undefined,
+        origin: { kind: 'injection', variant: 'turn_continue', ownerPromptId: 'p1' },
+        input: [],
+        trigger: 'continue',
+      }),
+      loop({ type: 'step.begin', uuid: 'step-c1', turnId: '1', step: 1 }),
+      turnEnded(1, 'failed'),
+      record('prompt.completed', { promptId: 'generated-waiter-1', reason: 'failed' }),
+    ]);
+    expect(continuedFailed.trailingRejectedPrompt).toBe(false);
+    expect(continuedFailed.turns.at(-1)).toMatchObject({ status: 'ended', outcome: 'failed' });
+
+    const subsequentGateFailure = fold([
+      turnPrompt(0, 'p1'),
+      userMessage('p1', 'work'),
+      turnEnded(0, 'cancelled'),
+      record('turn.prompt', {
+        turnId: 1,
+        promptId: undefined,
+        origin: { kind: 'injection', variant: 'turn_continue', ownerPromptId: 'p1' },
+        input: [],
+        trigger: 'continue',
+      }),
+      loop({ type: 'step.begin', uuid: 'step-c1', turnId: '1', step: 1 }),
+      turnEnded(1, 'failed'),
+      record('prompt.completed', { promptId: 'generated-waiter-1', reason: 'failed' }),
+      record('prompt.completed', { promptId: 'p2', reason: 'failed' }),
+    ]);
+    expect(subsequentGateFailure.trailingRejectedPrompt).toBe(true);
+  });
 });
