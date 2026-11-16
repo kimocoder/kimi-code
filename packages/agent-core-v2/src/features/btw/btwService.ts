@@ -19,6 +19,7 @@ import {
 
 export class SessionBtwService extends Disposable implements ISessionBtwService {
   declare readonly _serviceBrand: undefined;
+  private readonly closing = new Map<string, Promise<void>>();
 
   constructor(
     @IAgentLifecycleService private readonly agentLifecycle: IAgentLifecycleService,
@@ -67,6 +68,16 @@ export class SessionBtwService extends Disposable implements ISessionBtwService 
         `Agent "${agentId}" is not a side-channel agent and cannot be closed`,
       );
     }
+    const inflight = this.closing.get(agentId);
+    if (inflight !== undefined) return inflight;
+    const task = this.doClose(agentId).finally(() => {
+      if (this.closing.get(agentId) === task) this.closing.delete(agentId);
+    });
+    this.closing.set(agentId, task);
+    return task;
+  }
+
+  private async doClose(agentId: string): Promise<void> {
     const persisted = (await this.sessionMetadata.read()).agents?.[agentId];
     const live = this.agentLifecycle.get(agentId);
     const liveHandle = this.agentLifecycle.handleOf(agentId);

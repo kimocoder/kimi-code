@@ -18,6 +18,7 @@ import { SessionBtwService } from '#/features/btw/btwService';
 import { IAgentReminderService } from '#/features/reminder/reminderService';
 import type { ToolCall } from '#human/message';
 import type { AgentContext } from '#/agent/agentContext/agentContext';
+import { ErrorCodes } from '#/errors';
 import {
   IAgentLifecycleService,
   type AgentScopeCreatedEvent,
@@ -235,5 +236,55 @@ describe('SessionBtwService', () => {
 
     await ix.get(ISessionBtwService).close('agent-btw-1');
     expect(order).toEqual(['unregister', 'remove']);
+  });
+
+  it('joins an in-progress close when a second close starts after metadata unregistration', async () => {
+    let persistedAgents: Record<string, { type: 'sub'; labels: Record<string, string> }> = {
+      'agent-btw-1': { type: 'sub', labels: { [BTW_AGENT_LABEL]: 'true' } },
+    };
+    let liveVisible = true;
+    let releaseRemove!: () => void;
+    const removeBarrier = new Promise<void>((resolve) => {
+      releaseRemove = resolve;
+    });
+    const removeById = vi.fn(async () => {
+      liveVisible = false;
+      await removeBarrier;
+    });
+    ix.stub(IAgentLifecycleService, {
+      _serviceBrand: undefined,
+      onDidCreateScope: onDidCreateScope.event,
+      get: (id: string) => (id === 'agent-btw-1' && liveVisible ? childContext : undefined),
+      handleOf: (id: string) => (id === 'agent-btw-1' && liveVisible ? child : undefined),
+      removeById,
+    } as unknown as IAgentLifecycleService);
+    ix.stub(ISessionMetadata, {
+      _serviceBrand: undefined,
+      read: async () => ({ id: 's1', createdAt: 0, updatedAt: 0, archived: false, agents: persistedAgents }),
+      unregisterAgent: vi.fn(async (id: string) => {
+        const next = { ...persistedAgents };
+        delete next[id];
+        persistedAgents = next;
+      }),
+    } as unknown as ISessionMetadata);
+    ix.set(ISessionBtwService, new SyncDescriptor(SessionBtwService));
+
+    const svc = ix.get(ISessionBtwService);
+    const first = svc.close('agent-btw-1');
+    await vi.waitFor(() => expect(removeById).toHaveBeenCalledTimes(1));
+
+    let secondSettled = false;
+    const second = svc.close('agent-btw-1').then(() => {
+      secondSettled = true;
+    });
+    await Promise.resolve();
+    expect(secondSettled).toBe(false);
+
+    releaseRemove();
+    await Promise.all([first, second]);
+    expect(secondSettled).toBe(true);
+    expect(removeById).toHaveBeenCalledTimes(1);
+
+    await expect(svc.close('agent-btw-1')).rejects.toMatchObject({ code: ErrorCodes.AGENT_NOT_FOUND });
   });
 });
