@@ -1,5 +1,31 @@
 # @moonshot-ai/kimi-code
 
+## 2.6.3
+
+### Patch Changes
+
+- [#4994](https://github.com/MoonshotAI/kimi-code/pull/4994) [`2016917`](https://github.com/MoonshotAI/kimi-code/commit/20169174c815ada19093bc687b1433ef8b52f8f9) Thanks [@sailist](https://github.com/sailist)! - Fix duplicate output and a lingering loading spinner after foreground shell commands.
+
+- [#4982](https://github.com/MoonshotAI/kimi-code/pull/4982) [`9d7f9af`](https://github.com/MoonshotAI/kimi-code/commit/9d7f9af9fba7d1282873a31ec8486f9ea956c591) Thanks [@sailist](https://github.com/sailist)! - Resume legacy sessions after their default model is removed, and use the selected session model for print authentication.
+
+- [#4971](https://github.com/MoonshotAI/kimi-code/pull/4971) [`a29c2d0`](https://github.com/MoonshotAI/kimi-code/commit/a29c2d0379e6ffe95b2bdeafe143bdf149815dac) Thanks [@sailist](https://github.com/sailist)! - Make deferred tools available as inline defaults for models that do not support dynamic tool loading.
+
+- [#4991](https://github.com/MoonshotAI/kimi-code/pull/4991) [`6ba822e`](https://github.com/MoonshotAI/kimi-code/commit/6ba822ed21a79c46189669357094fe20a241aa4a) Thanks [@sailist](https://github.com/sailist)! - Allow sessions to open with default or last-known-good validated config when the user config cannot be read, parsed, or validated, and surface errors in headless diagnostics.
+
+- [#4990](https://github.com/MoonshotAI/kimi-code/pull/4990) [`cd83fdd`](https://github.com/MoonshotAI/kimi-code/commit/cd83fdd96b65e2c96544b028111fe60c4869181c) Thanks [@sailist](https://github.com/sailist)! - Fix turns failing on context overflow after an LLM retry.
+
+- [#4981](https://github.com/MoonshotAI/kimi-code/pull/4981) [`1101ea7`](https://github.com/MoonshotAI/kimi-code/commit/1101ea7d60377c606094bf05497cb9bd0dc2242f) Thanks [@github-actions](https://github.com/apps/github-actions)! - Treat model responses stopped for repeated output as retryable failures.
+
+- [#4981](https://github.com/MoonshotAI/kimi-code/pull/4981) [`c4f6746`](https://github.com/MoonshotAI/kimi-code/commit/c4f6746aeaf57b889226ad02cf70b692fb419436) Thanks [@github-actions](https://github.com/apps/github-actions)! - Keep session lists available when an older session index is present instead of rebuilding it.
+
+- [#4995](https://github.com/MoonshotAI/kimi-code/pull/4995) [`f6996a9`](https://github.com/MoonshotAI/kimi-code/commit/f6996a9292cd970491247d00783f18e92991f417) Thanks [@sailist](https://github.com/sailist)! - Run external Stop hooks after each completed turn and include final step details in their input.
+
+- [#4993](https://github.com/MoonshotAI/kimi-code/pull/4993) [`1590a95`](https://github.com/MoonshotAI/kimi-code/commit/1590a95bb0590f7bf1c6d08820da2c4900e8bc5f) Thanks [@sailist](https://github.com/sailist)! - Fix subagents being marked as failed while they are still running.
+
+- [#4989](https://github.com/MoonshotAI/kimi-code/pull/4989) [`9c75e5a`](https://github.com/MoonshotAI/kimi-code/commit/9c75e5aa97e6720add1f7e5833d5b31d99bb25c4) Thanks [@sailist](https://github.com/sailist)! - Prevent restored background task notifications from starting model requests when sessions are resumed or forked.
+
+- [#4992](https://github.com/MoonshotAI/kimi-code/pull/4992) [`0617b20`](https://github.com/MoonshotAI/kimi-code/commit/0617b20ce76cd4aaf6be8c8b6093b424833e2746) Thanks [@sailist](https://github.com/sailist)! - Prevent background notifications from incorrectly stopping Tower tasks.
+
 ## 2.6.2
 
 ### Patch Changes
