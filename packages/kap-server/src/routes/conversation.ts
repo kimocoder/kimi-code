@@ -97,6 +97,7 @@ export function registerConversationRoutes(
     {
       method: 'POST',
       path: '/sessions/{session_id}/agents/{tail}',
+      minRole: 'operator',
       params: actionTailParamsSchema,
       success: { data: agentCloseResponseSchema },
       errors: {
