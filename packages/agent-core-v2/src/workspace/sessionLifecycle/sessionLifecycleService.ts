@@ -56,7 +56,7 @@ import { IBlobStore } from '#/persistence/interface/blobStore';
 import { ISessionLockService } from '#/persistence/interface/sessionLock';
 import { IAtomicDocumentStore, IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
-import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { InMemorySessionLockService } from '#/persistence/backends/memory/sessionLockService';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import {
@@ -345,7 +345,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const telemetryBinding = bindTelemetryScope(this.telemetry, {
       session_id: opts.sessionId,
     });
-    const ephemeralStorage = isEphemeral ? new InMemoryStorageService() : undefined;
+    const ephemeralStorage = isEphemeral ? new FileStorageService(sessionDir, 0o700, 0o600) : undefined;
     const ephemeralAppendLog =
       ephemeralStorage === undefined ? undefined : new AppendLogStore(ephemeralStorage, this.log);
     const ephemeralSeeds =

@@ -154,6 +154,8 @@ export interface EnvironmentMediaTargets {
   dispose(): void;
 }
 
+const trackedEphemeralMediaRoots = new WeakMap<IHostFileSystem, Set<string>>();
+
 export function environmentMediaTargets(
   binding: EnvironmentBinding,
   environment: IAgentEnvironmentService,
@@ -161,29 +163,40 @@ export function environmentMediaTargets(
 ): EnvironmentMediaTargets {
   if (binding.environmentId === 'local') return { dispose: () => {} };
   let lease: EnvironmentLease | undefined;
-  let cleanupTracked = false;
   const ephemeralSessionId = options?.ephemeral === true ? options.sessionId : undefined;
   const acquire = async (): Promise<Environment> => {
     if (lease === undefined) {
       lease = await environment.acquireWhenReady(['fs']);
-      if (ephemeralSessionId !== undefined && !cleanupTracked) {
-        cleanupTracked = true;
+      if (ephemeralSessionId !== undefined) {
         const targetEnv = lease.environment;
         const tempDir = (targetEnv.host as Environment['host'] & { tempDir?: string }).tempDir;
         if (tempDir !== undefined && targetEnv.fs !== undefined && targetEnv.path !== undefined) {
+          const fs = targetEnv.fs;
           const ephemeralRoot = targetEnv.path.join(
             tempDir,
             'kimi-code',
             `ephemeral-${ephemeralSessionId}`,
           );
-          lease.track(
-            {
-              dispose: async () => {
-                await targetEnv.fs!.remove(ephemeralRoot).catch(() => {});
+          let tracked = trackedEphemeralMediaRoots.get(fs);
+          if (tracked === undefined) {
+            tracked = new Set();
+            trackedEphemeralMediaRoots.set(fs, tracked);
+          }
+          if (!tracked.has(ephemeralRoot)) {
+            tracked.add(ephemeralRoot);
+            lease.track(
+              {
+                dispose: async () => {
+                  try {
+                    await fs.remove(ephemeralRoot).catch(() => {});
+                  } finally {
+                    tracked.delete(ephemeralRoot);
+                  }
+                },
               },
-            },
-            ephemeralSessionId,
-          );
+              ephemeralSessionId,
+            );
+          }
         }
       }
     }
