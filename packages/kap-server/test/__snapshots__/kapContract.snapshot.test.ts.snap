@@ -2297,6 +2297,29 @@ exports[`KAP OpenAPI + AsyncAPI contract compatibility snapshot > keeps public /
         ],
       },
     },
+    "POST /api/v1/sessions/{session_id}/agents/{tail}": {
+      "body": null,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "session_id",
+          "required": true,
+        },
+        {
+          "in": "path",
+          "name": "tail",
+          "required": true,
+        },
+      ],
+      "responseData": {
+        "properties": [
+          "closed",
+        ],
+        "required": [
+          "closed",
+        ],
+      },
+    },
     "POST /api/v1/sessions/{session_id}/export": {
       "body": {
         "properties": [
