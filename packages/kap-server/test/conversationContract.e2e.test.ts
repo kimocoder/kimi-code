@@ -1317,14 +1317,23 @@ describe('conversation contract e2e', () => {
         error: { code: 40941 },
       });
 
-      const notReclaimedWhileRetained = await server!.core.accessor
-        .get(ISessionManager)
-        .closeIfIdle(sid, 0, { isRetained: () => true });
-      expect(notReclaimedWhileRetained).toBe(false);
+      const closeReasons: Array<{ sessionId: string; reason: string }> = [];
+      const closeSub = server!.core.accessor.get(ISessionManager).onWillCloseSession?.((ev) => {
+        closeReasons.push({ sessionId: ev.sessionId, reason: ev.reason });
+      });
+      try {
+        const notReclaimedWhileRetained = await server!.core.accessor
+          .get(ISessionManager)
+          .closeIfIdle(sid, 0, { isRetained: () => true });
+        expect(notReclaimedWhileRetained).toBe(false);
 
-      const retainedWhileIdle = await server!.core.accessor.get(ISessionManager).closeIfIdle(sid, 0);
-      expect(retainedWhileIdle).toBe(true);
-      await expect(stat(tempDirPath)).rejects.toThrow();
+        const retainedWhileIdle = await server!.core.accessor.get(ISessionManager).closeIfIdle(sid, 0);
+        expect(retainedWhileIdle).toBe(true);
+        expect(closeReasons).toContainEqual({ sessionId: sid, reason: 'exit' });
+        await expect(stat(tempDirPath)).rejects.toThrow();
+      } finally {
+        closeSub?.dispose();
+      }
 
       const afterReclaimRes = await fetch(`${base}/api/v1/sessions/${encodeURIComponent(sid)}`, {
         headers: authHeaders(server!),

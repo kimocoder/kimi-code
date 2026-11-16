@@ -326,7 +326,7 @@ export class SessionManager implements ISessionManager {
         }
         try {
           if (await this.retained(handle)) return false;
-          await controller.close(sessionId, 'reclaim');
+          await controller.close(sessionId, isEphemeral ? 'exit' : 'reclaim');
           if (!isEphemeral) this.reclaimed.add(sessionId);
           return true;
         } finally {
