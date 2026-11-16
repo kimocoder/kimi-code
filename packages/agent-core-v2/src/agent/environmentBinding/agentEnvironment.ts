@@ -55,10 +55,13 @@ export interface EnvironmentTempTarget {
   readonly dir: string;
 }
 
+const trackedEphemeralEnvironmentDirs = new WeakMap<IHostFileSystem, Set<string>>();
+
 export function environmentTempTarget(
   service: IAgentEnvironmentService,
   subdir: string,
   localTempDir?: string,
+  options?: { readonly sessionId?: string; readonly ephemeral?: boolean },
 ): EnvironmentTempTarget | undefined {
   let lease: EnvironmentLease;
   try {
@@ -70,10 +73,32 @@ export function environmentTempTarget(
     const environment = lease.environment;
     const fs = environment.fs;
     const path = environment.path;
+    const isLocal = environment.identity.environmentId === LOCAL_ENVIRONMENT_ID;
+    const ephemeralSessionId = options?.ephemeral === true ? options.sessionId : undefined;
     const tempDir =
       environment.host?.tempDir ??
-      (environment.identity.environmentId === LOCAL_ENVIRONMENT_ID ? localTempDir : undefined);
+      (isLocal ? localTempDir : undefined);
     if (fs === undefined || path === undefined || tempDir === undefined) return undefined;
+    if (ephemeralSessionId !== undefined && !isLocal) {
+      const ephemeralRoot = path.join(tempDir, 'kimi-code', `ephemeral-${ephemeralSessionId}`);
+      let tracked = trackedEphemeralEnvironmentDirs.get(fs);
+      if (tracked === undefined) {
+        tracked = new Set();
+        trackedEphemeralEnvironmentDirs.set(fs, tracked);
+      }
+      if (!tracked.has(ephemeralRoot)) {
+        tracked.add(ephemeralRoot);
+        lease.track(
+          {
+            dispose: async () => {
+              await fs.remove(ephemeralRoot).catch(() => {});
+            },
+          },
+          ephemeralSessionId,
+        );
+      }
+      return { fs, path, dir: path.join(ephemeralRoot, subdir) };
+    }
     return { fs, path, dir: path.join(tempDir, 'kimi-code', subdir) };
   } finally {
     lease.dispose();
