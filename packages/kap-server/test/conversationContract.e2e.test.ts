@@ -1064,6 +1064,10 @@ describe('conversation contract e2e', () => {
         respond: () => JSON.stringify({ error: { message: 'synthetic upstream error' } }),
       },
       {
+        match: (body) => body.includes('Summarize the conversation'),
+        respond: () => sseText('compacted summary'),
+      },
+      {
         match: (body) => body.includes('Continue the interrupted work from where it stopped'),
         respond: () => sseText('resumed reply'),
       },
@@ -1170,6 +1174,35 @@ describe('conversation contract e2e', () => {
       },
     );
     expect(((await afterUndoRes.json()) as { code: number }).code).toBe(40940);
+
+    failNow = true;
+    await submitPrompt(server!, base, sid, 'trigger failure before compact');
+    await until(
+      'second failed turn ended',
+      () => channel.turns().at(-1)?.status === 'ended' && channel.turns().at(-1)?.outcome === 'failed',
+    );
+    failNow = false;
+
+    await rest(server!, base, `/api/v1/sessions/${encodeURIComponent(sid)}:compact`, {
+      method: 'POST',
+      body: {},
+    });
+    await until(
+      'compaction system turn recorded',
+      () => channel.turns().at(-1)?.kind === 'system' && channel.turns().at(-1)?.outcome === 'completed',
+    );
+
+    const continuedAfterCompact = await rest<{ continued: true }>(
+      server!,
+      base,
+      `/api/v1/sessions/${encodeURIComponent(sid)}:continue`,
+      { method: 'POST', body: {} },
+    );
+    expect(continuedAfterCompact).toEqual({ continued: true });
+    await until(
+      'continuation after compaction completed',
+      () => channel.turns().at(-1)?.kind === 'agent' && channel.turns().at(-1)?.status === 'ended' && channel.turns().at(-1)?.outcome === 'completed',
+    );
 
     channel.close();
   });

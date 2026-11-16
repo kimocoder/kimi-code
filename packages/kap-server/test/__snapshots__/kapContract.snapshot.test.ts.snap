@@ -2883,6 +2883,24 @@ exports[`KAP OpenAPI + AsyncAPI contract compatibility snapshot > keeps public /
         ],
       },
     },
+    "POST /api/v1/sessions/{session_id}:continue": {
+      "body": null,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "session_id",
+          "required": true,
+        },
+      ],
+      "responseData": {
+        "properties": [
+          "continued",
+        ],
+        "required": [
+          "continued",
+        ],
+      },
+    },
     "POST /api/v1/sessions/{session_id}:delete": {
       "body": null,
       "parameters": [

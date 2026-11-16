@@ -450,6 +450,9 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope, conve
       },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
+        [ErrorCode.AUTH_PROVISIONING_REQUIRED]: {},
+        [ErrorCode.AUTH_TOKEN_MISSING]: {},
+        [ErrorCode.AUTH_MODEL_NOT_RESOLVED]: {},
         [ErrorCode.SESSION_NOT_FOUND]: {},
         [ErrorCode.SESSION_BUSY]: {},
         ...sessionConflictErrors,
@@ -767,7 +770,7 @@ async function continueSessionAction(ctx: SessionActionCtx): Promise<void> {
         return { continuable: false };
       }
       const turns = feed.turns();
-      const latestTurn = turns.at(-1);
+      const latestTurn = turns.findLast((turn) => turn.kind === 'agent');
       if (latestTurn === undefined) {
         return { continuable: false };
       }

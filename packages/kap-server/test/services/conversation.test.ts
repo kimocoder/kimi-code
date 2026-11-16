@@ -1294,4 +1294,23 @@ describe('conversation feed', () => {
     expect(await huge.feed.page(undefined, 10)).toMatchObject({ turns: [{ ordinal: 0 }], has_more: false });
     huge.dispatcher.dispose();
   });
+
+  it('does not mark a failed notification-opened turn as a trailing rejected prompt', () => {
+    const state = fold([
+      turnPrompt(0, 'notif-p1', { kind: 'background_task', taskId: 'bg-1' }),
+      userMessage('notif-p1', notificationXml('bg-1'), { kind: 'background_task', taskId: 'bg-1' }),
+      turnEnded(0, 'failed'),
+      record('prompt.completed', { promptId: 'notif-p1', reason: 'failed' }),
+    ]);
+    expect(state.trailingRejectedPrompt).toBe(false);
+    expect(state.turns[0]).toMatchObject({ status: 'ended', outcome: 'failed' });
+
+    const rejected = fold([
+      turnPrompt(0, 'p1'),
+      userMessage('p1', 'work'),
+      turnEnded(0, 'failed'),
+      record('prompt.completed', { promptId: 'p2', reason: 'blocked' }),
+    ]);
+    expect(rejected.trailingRejectedPrompt).toBe(true);
+  });
 });

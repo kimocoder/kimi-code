@@ -571,8 +571,10 @@ function applyPromptRejected(
     const turn = state.turns[index]!;
     const hasPrompt = turn.items.some(
       (item) =>
-        item.type === 'user_message' &&
-        (item.item_id === promptId || item.prompt_ids.includes(promptId)),
+        (item.type === 'user_message' &&
+          (item.item_id === promptId || item.prompt_ids.includes(promptId))) ||
+        (item.type === 'notification' &&
+          (item.item_id === promptId || item.item_id.startsWith(`${promptId}:`))),
     );
     if (!hasPrompt) continue;
     if (blocked && turn.items[0]?.type === 'user_message' && turn.items[0].item_id === promptId) {
