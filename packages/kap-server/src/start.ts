@@ -143,6 +143,7 @@ export interface ServerStartOptions {
   readonly webAssetsDir?: string;
   readonly serverVersion?: string;
   readonly telemetry?: boolean;
+  readonly idleSweepIntervalMs?: number;
 }
 
 export interface RunningServer {
@@ -343,7 +344,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     logger,
   );
   const inFlightSessionRequests = new Map<string, number>();
-  const retainedSessionRequests = new WeakMap<object, () => void>();
+  const retainedSessionRequests = new WeakMap<object, (() => void)[]>();
   const retainSessionForReaper = (sessionId: string): (() => void) => {
     inFlightSessionRequests.set(sessionId, (inFlightSessionRequests.get(sessionId) ?? 0) + 1);
     let released = false;
@@ -354,6 +355,12 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       if (next <= 0) inFlightSessionRequests.delete(sessionId);
       else inFlightSessionRequests.set(sessionId, next);
     };
+  };
+  const retainSessionForRequest = (req: object, sessionId: string): void => {
+    const releases = retainedSessionRequests.get(req);
+    const release = retainSessionForReaper(sessionId);
+    if (releases === undefined) retainedSessionRequests.set(req, [release]);
+    else releases.push(release);
   };
   const extractSessionIdFromUrl = (rawUrl: string): string | undefined => {
     const pathMatch = /^\/api\/v1\/sessions\/([^/?#:]+)/.exec(rawUrl);
@@ -378,7 +385,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     core.accessor.get(ISessionManager),
     logger,
     idleReclaimMs,
-    undefined,
+    opts.idleSweepIntervalMs,
     (sessionId) =>
       broadcaster.hasSubscribers(sessionId) || (inFlightSessionRequests.get(sessionId) ?? 0) > 0,
   );
@@ -411,15 +418,15 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   app.addHook('onRequest', (req, _reply, done) => {
     const sid = extractSessionIdFromUrl(req.url);
     if (sid !== undefined && sid.length > 0) {
-      retainedSessionRequests.set(req, retainSessionForReaper(sid));
+      retainSessionForRequest(req, sid);
     }
     done();
   });
   const releaseSessionRequest = (req: object): void => {
-    const release = retainedSessionRequests.get(req);
-    if (release === undefined) return;
+    const releases = retainedSessionRequests.get(req);
+    if (releases === undefined) return;
     retainedSessionRequests.delete(req);
-    release();
+    for (const release of releases) release();
   };
   app.addHook('onResponse', (req, _reply, done) => {
     releaseSessionRequest(req);
@@ -633,6 +640,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     },
     conversations,
     sessionRating,
+    retainSessionForRequest,
     dangerousBypassAuth: opts.disableAuth === true,
     webTitle: opts.webTitle,
   });

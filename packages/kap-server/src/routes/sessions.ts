@@ -139,7 +139,12 @@ const sessionActionRequestSchema = z.preprocess(
 
 const detailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
 
-export function registerSessionsRoutes(app: SessionRouteHost, core: Scope, conversations: ConversationService): void {
+export function registerSessionsRoutes(
+  app: SessionRouteHost,
+  core: Scope,
+  conversations: ConversationService,
+  retainSessionForRequest?: (req: object, sessionId: string) => void,
+): void {
   const createRoute = defineRoute(
     {
       method: 'POST',
@@ -241,12 +246,14 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope, conve
           mainAgentBinding,
           ensureMainAgent: body.environment_id !== undefined && body.environment_id !== 'local',
           prepare: async (session) => {
+            retainSessionForRequest?.(req, session.id);
             if (Object.keys(custom).length > 0) {
               await session.accessor.get(ISessionMetadata).update({ custom });
             }
             if (appliesSettings) await applyAgentConfigToSession(session, settings);
           },
         });
+        retainSessionForRequest?.(req, handle.id);
         const metadata = handle.accessor.get(ISessionMetadata);
         if (typeof body.title === 'string') await metadata.setTitle(body.title);
         const meta = await metadata.read();

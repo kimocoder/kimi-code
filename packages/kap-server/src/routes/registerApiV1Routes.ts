@@ -64,6 +64,7 @@ export interface RegisterApiV1RoutesOptions {
   readonly onShutdown: () => void;
   readonly conversations: ConversationService;
   readonly sessionRating: SessionRatingHost;
+  readonly retainSessionForRequest?: (req: object, sessionId: string) => void;
   readonly remoteControl: RemoteControlRouteOptions;
   readonly access?: RegisterAccessRoutesOptions;
   readonly dangerousBypassAuth?: boolean;
@@ -134,6 +135,7 @@ export async function registerApiV1Routes(
         apiV1 as unknown as Parameters<typeof registerSessionsRoutes>[0],
         core,
         opts.conversations,
+        opts.retainSessionForRequest,
       );
       registerSessionListAndBatchRoutes(
         apiV1 as unknown as Parameters<typeof registerSessionListAndBatchRoutes>[0],
