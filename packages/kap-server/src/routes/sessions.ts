@@ -233,7 +233,7 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope, conve
         const { profile: _profile, model: _model, thinking: _thinking, ...settings } = agentConfig;
         const appliesSettings = Object.keys(settings).some((key) => key !== 'tower_base');
         const handle = await core.accessor.get(ISessionManager).create({
-          workspaceId: bucket !== undefined ? resolved.id : undefined,
+          workspaceId: isEphemeral && bucket === undefined ? undefined : resolved.id,
           ephemeral: isEphemeral ? true : undefined,
           workDir,
           environmentId: body.environment_id,

@@ -404,7 +404,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
               );
             }
             if (isEphemeral) {
-              container.anchorKernelEntry(
+              container.anchorKernelFinalizer(
                 () => {
                   try {
                     rmSync(sessionDir, { recursive: true, force: true });
