@@ -90,6 +90,7 @@ export type BroadcastFrame =
 
 export interface BroadcastTarget {
   readonly role?: 'viewer' | 'operator' | 'owner';
+  readonly isClosed?: boolean;
   send(frame: BroadcastFrame, delivery?: BroadcastDelivery): void;
 }
 
@@ -221,6 +222,9 @@ export class SessionEventBroadcaster {
       }
       if (session === undefined) {
         throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session not found: ${sessionId}`);
+      }
+      if (target.isClosed === true) {
+        return;
       }
       const state = this.ensureState(sessionId);
       if (state === undefined) {

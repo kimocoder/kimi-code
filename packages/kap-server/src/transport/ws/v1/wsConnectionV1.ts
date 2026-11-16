@@ -128,6 +128,10 @@ export class WsConnectionV1 implements BroadcastTarget {
     return this.broadcaster.sessionsOf(this);
   }
 
+  get isClosed(): boolean {
+    return this.closed;
+  }
+
   send(frame: BroadcastFrame, delivery: BroadcastDelivery = 'subscription'): void {
     if (delivery === 'immediate') this.sendImmediateFrame(frame);
     else this.sendSubscribedFrame(frame);
