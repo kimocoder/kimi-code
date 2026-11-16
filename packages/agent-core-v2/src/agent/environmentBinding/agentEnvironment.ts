@@ -91,7 +91,11 @@ export function environmentTempTarget(
         lease.track(
           {
             dispose: async () => {
-              await fs.remove(ephemeralRoot).catch(() => {});
+              try {
+                await fs.remove(ephemeralRoot).catch(() => {});
+              } finally {
+                tracked.delete(ephemeralRoot);
+              }
             },
           },
           ephemeralSessionId,

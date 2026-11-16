@@ -425,6 +425,13 @@ describe('AgentTaskPersistence', () => {
 
     await tracked[0]!.dispose();
     expect(removed).toEqual(['/remote/tmp/kimi-code/ephemeral-s_ephem']);
+
+    const recreated = environmentTempTarget(envService, 'task-output', undefined, {
+      sessionId: 's_ephem',
+      ephemeral: true,
+    });
+    expect(recreated?.dir).toBe('/remote/tmp/kimi-code/ephemeral-s_ephem/task-output');
+    expect(tracked).toHaveLength(2);
   });
   });
 });
