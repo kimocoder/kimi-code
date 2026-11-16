@@ -66,7 +66,9 @@ export class AgentTaskOutputService implements IAgentTaskOutputService {
       scopeContext.scope(),
       byteStore,
       fallbackRoot,
-      () => environment === undefined ? undefined : environmentTempTarget(environment, 'task-output'),
+      session.ephemeral === true
+        ? undefined
+        : () => environment === undefined ? undefined : environmentTempTarget(environment, 'task-output'),
     );
   }
 

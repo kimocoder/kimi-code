@@ -42,6 +42,7 @@ export const sessionSchema = z.object({
   last_turn_outcome: sessionLastTurnOutcomeSchema.optional(),
   archived: z.boolean().optional(),
   archived_at: isoDateTimeSchema.optional(),
+  ephemeral: z.boolean().optional(),
   last_prompt: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
   git: sessionGitSchema.optional(),
@@ -57,6 +58,7 @@ export const sessionCreateSchema = z
   .object({
     title: z.string().min(1).optional(),
     cwd: z.string().min(1).optional(),
+    ephemeral: z.boolean().optional(),
     metadata: sessionMetadataSchema.partial().optional(),
     agent_config: sessionAgentConfigPartialSchema
       .extend({ profile: z.string().min(1).optional() })

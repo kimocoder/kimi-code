@@ -342,10 +342,45 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     core.accessor.get(IConfigService),
     logger,
   );
+  const inFlightSessionRequests = new Map<string, number>();
+  const retainedSessionRequests = new WeakMap<object, () => void>();
+  const retainSessionForReaper = (sessionId: string): (() => void) => {
+    inFlightSessionRequests.set(sessionId, (inFlightSessionRequests.get(sessionId) ?? 0) + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      const next = (inFlightSessionRequests.get(sessionId) ?? 1) - 1;
+      if (next <= 0) inFlightSessionRequests.delete(sessionId);
+      else inFlightSessionRequests.set(sessionId, next);
+    };
+  };
+  const extractSessionIdFromUrl = (rawUrl: string): string | undefined => {
+    const pathMatch = /^\/api\/v1\/sessions\/([^/?#:]+)/.exec(rawUrl);
+    if (pathMatch !== null) {
+      try {
+        return decodeURIComponent(pathMatch[1]!);
+      } catch {
+        return undefined;
+      }
+    }
+    const qIndex = rawUrl.indexOf('?');
+    if (qIndex === -1) return undefined;
+    try {
+      const value = new URLSearchParams(rawUrl.slice(qIndex + 1)).get('session_id')?.trim();
+      return value !== undefined && value.length > 0 ? value : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+
   const sessionIdleReaper = new SessionIdleReaper(
     core.accessor.get(ISessionManager),
     logger,
     idleReclaimMs,
+    undefined,
+    (sessionId) =>
+      broadcaster.hasSubscribers(sessionId) || (inFlightSessionRequests.get(sessionId) ?? 0) > 0,
   );
 
   try {
@@ -373,6 +408,27 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   }) as unknown as FastifyInstance;
   app.server.requestTimeout = 0;
   registerRequestLogging(app);
+  app.addHook('onRequest', (req, _reply, done) => {
+    const sid = extractSessionIdFromUrl(req.url);
+    if (sid !== undefined && sid.length > 0) {
+      retainedSessionRequests.set(req, retainSessionForReaper(sid));
+    }
+    done();
+  });
+  const releaseSessionRequest = (req: object): void => {
+    const release = retainedSessionRequests.get(req);
+    if (release === undefined) return;
+    retainedSessionRequests.delete(req);
+    release();
+  };
+  app.addHook('onResponse', (req, _reply, done) => {
+    releaseSessionRequest(req);
+    done();
+  });
+  app.addHook('onRequestAbort', (req, done) => {
+    releaseSessionRequest(req);
+    done();
+  });
   app.setValidatorCompiler(() => () => true);
   app.setSerializerCompiler(() => (data) => JSON.stringify(data));
   installErrorHandler(app);
@@ -584,6 +640,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const wssV1 = registerWsV1(core, {
     registry: connectionRegistry,
     broadcaster,
+    taskRetainer: { retain: retainSessionForReaper },
     onOwnerConnected: (conn) => {
       if (accessHandshakeManager === undefined) return;
       void accessHandshakeManager

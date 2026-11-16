@@ -1,4 +1,4 @@
-import { Error2, ErrorCodes, type ISessionManager } from '@moonshot-ai/agent-core-v2';
+import { Error2, ErrorCodes, ISessionContext, type ISessionManager } from '@moonshot-ai/agent-core-v2';
 
 import type { ServerLogger } from './pinoLoggerService';
 
@@ -30,6 +30,7 @@ export class SessionIdleReaper {
     private readonly logger: Pick<ServerLogger, 'info' | 'warn'>,
     private readonly idleTimeoutMs: number,
     private readonly sweepIntervalMs: number = SWEEP_INTERVAL_MS,
+    private readonly hasActiveSubscribers?: (sessionId: string) => boolean,
   ) {}
 
   start(): void {
@@ -66,8 +67,19 @@ export class SessionIdleReaper {
   private async sweepSessions(): Promise<void> {
     for (const handle of this.sessions.list()) {
       if (this.closed) return;
+      let isEphemeral = false;
       try {
-        await this.sessions.closeIfIdle(handle.id, this.idleTimeoutMs);
+        isEphemeral = handle.accessor.get(ISessionContext)?.ephemeral === true;
+      } catch {
+        isEphemeral = false;
+      }
+      if (isEphemeral && this.hasActiveSubscribers?.(handle.id) === true) {
+        continue;
+      }
+      try {
+        await this.sessions.closeIfIdle(handle.id, this.idleTimeoutMs, {
+          isRetained: isEphemeral ? () => this.hasActiveSubscribers?.(handle.id) === true : undefined,
+        });
       } catch (error) {
         this.logger.warn(
           { sessionId: handle.id, err: error instanceof Error ? error.message : String(error) },

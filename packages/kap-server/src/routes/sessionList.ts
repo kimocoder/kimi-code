@@ -290,7 +290,9 @@ async function runBatchArchive(
           error:
             outcome.reason === 'not_found'
               ? { code: ErrorCode.SESSION_NOT_FOUND, message: outcome.message }
-              : { code: ErrorCode.INTERNAL_ERROR, message: outcome.message },
+              : outcome.reason === 'ephemeral'
+                ? { code: ErrorCode.SESSION_EPHEMERAL_UNSUPPORTED, message: outcome.message }
+                : { code: ErrorCode.INTERNAL_ERROR, message: outcome.message },
         },
   );
   await core.accessor.get(ISessionIndexMirror).drain();

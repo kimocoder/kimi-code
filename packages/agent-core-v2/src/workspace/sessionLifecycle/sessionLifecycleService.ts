@@ -1,4 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { rmSync } from 'node:fs';
+import { mkdtemp } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 
 import { join } from 'pathe';
 
@@ -49,9 +52,18 @@ import {
   type AppendLogTruncation,
   IAppendLogStore,
 } from '#/persistence/interface/appendLogStore';
+import { IBlobStore } from '#/persistence/interface/blobStore';
 import { ISessionLockService } from '#/persistence/interface/sessionLock';
-import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IAtomicDocumentStore, IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import { InMemorySessionLockService } from '#/persistence/backends/memory/sessionLockService';
+import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
+import {
+  JsonAtomicDocumentStore,
+  TomlAtomicDocumentStore,
+} from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { BlobStoreService } from '#/persistence/backends/node-fs/blobStoreService';
 import {
   IAgentLifecycleService,
   MAIN_AGENT_ID,
@@ -147,6 +159,14 @@ function sessionEnvironment(
   }
   return { environmentId, cwd };
 }
+
+const NOOP_SESSION_INDEX_MIRROR: ISessionIndexMirror = {
+  _serviceBrand: undefined,
+  record: () => {},
+  pending: () => [],
+  evict: async () => {},
+  drain: async () => {},
+};
 
 const SESSION_CREATE_RELOAD_SKILL_SOURCES: readonly string[] = [
   'user',
@@ -268,14 +288,18 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         await planHandle.accessor.get(IAgentPlanService).enter();
       }
       await opts.prepare?.(handle);
-      await this.appendSessionIndexEntry(sessionId, workDir);
+      if (opts.ephemeral !== true) {
+        await this.appendSessionIndexEntry(sessionId, workDir);
+      }
     } catch (error) {
       const sessionDir = handle.accessor.get(ISessionContext).sessionDir;
       this.sessions.delete(sessionId);
       await this.drainAgents(handle).catch(() => {});
       void handle.dispose();
       await this.hostFs.remove(sessionDir).catch(() => {});
-      await this.index.remove(sessionId).catch(() => {});
+      if (opts.ephemeral !== true) {
+        await this.index.remove(sessionId).catch(() => {});
+      }
       throw error;
     }
     await this.announceCreated({ sessionId, handle, source: 'startup' });
@@ -288,8 +312,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     workdir: ProgramWorkdir,
   ): Promise<ISessionScopeHandle> {
     const workspaceId = this.workspaceId;
+    const isEphemeral = opts.ephemeral === true;
     const sessionScope = sessionScopeOf(this.handlerScope, opts.sessionId);
-    const sessionDir = sessionDirOf(this.bootstrap.homeDir, this.handlerScope, opts.sessionId);
+    const sessionDir = isEphemeral
+      ? await mkdtemp(join(tmpdir(), `kimi-code-ephemeral-${opts.sessionId}-`))
+      : sessionDirOf(this.bootstrap.homeDir, this.handlerScope, opts.sessionId);
     const metaScope = sessionScope;
     const dirs = workdir.dirs;
     try {
@@ -299,6 +326,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       await dirs.mergeAdditionalDirs(environment?.cwd ?? opts.workDir, opts.additionalDirs ?? []);
     } catch (error) {
       workdir.dispose();
+      if (isEphemeral) {
+        await this.hostFs.remove(sessionDir).catch(() => {});
+      }
       throw error;
     }
     const ctx: ISessionContext = {
@@ -308,12 +338,28 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       sessionDir,
       metaScope,
       cwd: environment?.environmentId === LOCAL_ENVIRONMENT_ID ? environment.cwd : opts.workDir,
+      ephemeral: isEphemeral ? true : undefined,
       scope: (subKey?: string): string =>
         subKey === undefined || subKey === '' ? sessionScope : `${sessionScope}/${subKey}`,
     };
     const telemetryBinding = bindTelemetryScope(this.telemetry, {
       session_id: opts.sessionId,
     });
+    const ephemeralStorage = isEphemeral ? new InMemoryStorageService() : undefined;
+    const ephemeralAppendLog =
+      ephemeralStorage === undefined ? undefined : new AppendLogStore(ephemeralStorage, this.log);
+    const ephemeralSeeds =
+      ephemeralStorage === undefined
+        ? []
+        : ([
+            [IFileSystemStorageService, ephemeralStorage],
+            [IAppendLogStore, ephemeralAppendLog!],
+            [IAtomicDocumentStore, new JsonAtomicDocumentStore(ephemeralStorage)],
+            [IAtomicTomlDocumentStore, new TomlAtomicDocumentStore(ephemeralStorage)],
+            [IBlobStore, new BlobStoreService(ephemeralStorage)],
+            [ISessionLockService, new InMemorySessionLockService()],
+            [ISessionIndexMirror, NOOP_SESSION_INDEX_MIRROR],
+          ] as const);
     let handle: ISessionScopeHandle;
     const scopeCreated = new Emitter<ISessionScopeHandle>();
     try {
@@ -324,6 +370,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         {
           seeds: [
             ...sessionContextSeed(ctx),
+            ...ephemeralSeeds,
             [IProjectLocalConfigService, workdir.localConfig],
             [IWorkspaceTrust, this.trust],
             [ITelemetryService, telemetryBinding.telemetry],
@@ -350,6 +397,23 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
               'telemetry:session-context',
             );
             container.anchorKernelEntry(() => { workdir.dispose(); }, 'sessionLifecycle:workdir');
+            if (ephemeralAppendLog !== undefined) {
+              container.anchorKernelEntry(
+                () => { ephemeralAppendLog.dispose(); },
+                'sessionLifecycle:ephemeralAppendLog',
+              );
+            }
+            if (isEphemeral) {
+              container.anchorKernelEntry(
+                () => {
+                  try {
+                    rmSync(sessionDir, { recursive: true, force: true });
+                  } catch {
+                  }
+                },
+                'sessionLifecycle:ephemeralSessionDir',
+              );
+            }
             this._onWillCreateSession.fire({
               sessionId: opts.sessionId,
               onDidCreateScope: scopeCreated.event,
@@ -368,6 +432,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     } catch (error) {
       telemetryBinding.dispose();
       workdir.dispose();
+      if (isEphemeral) {
+        await this.hostFs.remove(sessionDir).catch(() => {});
+      }
       throw error;
     } finally {
       scopeCreated.dispose();
@@ -386,6 +453,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       ]);
     } catch (error) {
       void handle.dispose();
+      if (isEphemeral) {
+        await this.hostFs.remove(sessionDir).catch(() => {});
+      }
       void this.explicitAgentProfileLoader.reload().catch(() => undefined);
       throw error;
     }
@@ -536,23 +606,47 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   async close(sessionId: string, reason: Exclude<SessionCloseReason, 'archive'> = 'exit'): Promise<void> {
     const handle = this.sessions.get(sessionId);
     if (handle === undefined) return;
+    const ctx = handle.accessor.get(ISessionContext);
+    const isEphemeral = ctx.ephemeral === true;
     await this.announceWillClose({ sessionId, handle, reason });
     this.sessions.delete(sessionId);
-    await this.drainAgents(handle);
-    await this.appendLogStore.drainRetirements();
-    await drainSessionMetadataWrites();
-    await this.indexMirror.drain();
-    void handle.dispose();
-    await this.environments.drainSession(sessionId);
-    await drainLogCloses();
-    this._onDidCloseSession.fire({ sessionId });
-    const ended: SessionEndedEvent = { reason };
-    this.telemetry.withContext({ session_id: sessionId }).track2('session_ended', ended);
+    try {
+      await this.drainAgents(handle);
+      await this.appendLogStore.drainRetirements();
+      await drainSessionMetadataWrites();
+      if (!isEphemeral) {
+        await this.indexMirror.drain();
+      }
+      void handle.dispose();
+      await this.environments.drainSession(sessionId);
+      await drainLogCloses();
+      if (isEphemeral) {
+        await this.hostFs.remove(ctx.sessionDir).catch(() => {});
+      }
+      this._onDidCloseSession.fire({ sessionId });
+      const ended: SessionEndedEvent = { reason };
+      this.telemetry.withContext({ session_id: sessionId }).track2('session_ended', ended);
+    } catch (error) {
+      if (isEphemeral) {
+        void handle.dispose();
+        await this.environments.drainSession(sessionId).catch(() => {});
+        await drainLogCloses().catch(() => {});
+        await this.hostFs.remove(ctx.sessionDir).catch(() => {});
+        this._onDidCloseSession.fire({ sessionId });
+      }
+      throw error;
+    }
   }
 
   async archive(sessionId: string): Promise<void> {
     const handle = this.sessions.get(sessionId);
     if (handle === undefined) return;
+    if (handle.accessor.get(ISessionContext).ephemeral === true) {
+      throw new Error2(
+        ErrorCodes.SESSION_EPHEMERAL_UNSUPPORTED,
+        `ephemeral session ${sessionId} cannot be archived`,
+      );
+    }
     const lease = this.sessionLocks.lease(sessionId);
     try {
       const meta = handle.accessor.get(ISessionMetadata);
@@ -582,6 +676,13 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     sessionId: string,
     opts?: ResumeSessionOptions,
   ): Promise<ISessionScopeHandle | undefined> {
+    const live = this.sessions.get(sessionId);
+    if (live?.accessor.get(ISessionContext).ephemeral === true) {
+      throw new Error2(
+        ErrorCodes.SESSION_EPHEMERAL_UNSUPPORTED,
+        `ephemeral session ${sessionId} cannot be restored`,
+      );
+    }
     const handle = await this.resume(sessionId, opts);
     if (handle === undefined) return undefined;
     const metadata = handle.accessor.get(ISessionMetadata);
@@ -603,6 +704,10 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       await inflight.catch(() => undefined);
     }
     const handle = this.sessions.get(sessionId);
+    if (handle?.accessor.get(ISessionContext).ephemeral === true) {
+      await this.close(sessionId);
+      return;
+    }
     const summary = await this.index.get(sessionId);
     const persistedHere = summary !== undefined && summary.workspaceId === this.workspaceId;
     if (handle === undefined && !persistedHere) {
@@ -643,6 +748,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const sourceId = opts.sourceSessionId;
 
     const sourceHandle = this.sessions.get(sourceId);
+    if (sourceHandle?.accessor.get(ISessionContext).ephemeral === true) {
+      throw new Error2(
+        ErrorCodes.SESSION_EPHEMERAL_UNSUPPORTED,
+        `ephemeral session ${sourceId} cannot be forked`,
+      );
+    }
     const indexSummary = await this.index.get(sourceId);
     if (
       (sourceHandle === undefined && indexSummary === undefined) ||
