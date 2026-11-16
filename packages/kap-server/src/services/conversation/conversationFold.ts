@@ -106,6 +106,7 @@ export interface ConversationState {
   provisionalEnds: Record<string, TurnEnd>;
   recordsTurnEnds: boolean;
   trailingRejectedPrompt: boolean;
+  latestPromptId?: string;
   stepParts: Record<string, number>;
   compaction?: CompactionDetails;
 }
@@ -149,15 +150,18 @@ export function applyConversationRecord(state: ConversationState, record: WireRe
     state.inheriting = false;
   }
   switch (record.type) {
-    case 'turn.prompt':
+    case 'turn.prompt': {
       if (typeof record['trigger'] === 'string') state.recordsTurnEnds = true;
       state.trailingRejectedPrompt = false;
+      const promptId = stringField(record['promptId']);
+      if (promptId !== undefined) state.latestPromptId = promptId;
       state.pendingPrompt = {
         turnNumber: numberField(record['turnId']),
-        promptId: stringField(record['promptId']),
+        promptId,
         originKind: stringField((record['origin'] as { kind?: unknown } | undefined)?.kind),
       };
       return;
+    }
     case 'context.append_message':
       applyMessage(state, record['message'] as ContextMessage | undefined, time);
       return;
@@ -283,6 +287,7 @@ export function undoConversationTurns(state: ConversationState, count: number): 
   }
   if (state.openTurnId !== undefined && removed.has(state.openTurnId)) state.openTurnId = undefined;
   state.pendingPrompt = undefined;
+  state.latestPromptId = undefined;
   state.pendingSteers = 0;
   state.trailingRejectedPrompt = false;
   return state;

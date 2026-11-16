@@ -774,16 +774,24 @@ async function continueSessionAction(ctx: SessionActionCtx): Promise<void> {
       if (latestTurn === undefined) {
         return { continuable: false };
       }
-      let ownerPromptId: string | undefined;
-      for (let i = turns.length - 1; i >= 0; i -= 1) {
-        for (let j = turns[i]!.items.length - 1; j >= 0; j -= 1) {
-          const item = turns[i]!.items[j]!;
-          if (item.type === 'user_message' && item.prompt_ids.length > 0) {
-            ownerPromptId = item.prompt_ids.at(-1);
-            break;
-          }
+      let ownerPromptId = feed.latestPromptId();
+      if (ownerPromptId === undefined) {
+        const firstItem = latestTurn.items[0];
+        if (firstItem?.type === 'notification') {
+          ownerPromptId = firstItem.item_id;
         }
-        if (ownerPromptId !== undefined) break;
+      }
+      if (ownerPromptId === undefined) {
+        for (let i = turns.length - 1; i >= 0; i -= 1) {
+          for (let j = turns[i]!.items.length - 1; j >= 0; j -= 1) {
+            const item = turns[i]!.items[j]!;
+            if (item.type === 'user_message' && item.prompt_ids.length > 0) {
+              ownerPromptId = item.prompt_ids.at(-1);
+              break;
+            }
+          }
+          if (ownerPromptId !== undefined) break;
+        }
       }
       return {
         continuable:
