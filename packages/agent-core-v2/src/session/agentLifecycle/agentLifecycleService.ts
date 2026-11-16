@@ -42,7 +42,7 @@ import {
   IAgentProfileService,
   type ProfileBindingSnapshot,
 } from '#/agent/profile/profile';
-import { abortError } from '#/_base/utils/abort';
+import { abortError, isAbortError } from '#/_base/utils/abort';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentPermissionRulesService } from '#/agent/permissionRules/permissionRules';
 
@@ -86,6 +86,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   declare readonly _serviceBrand: undefined;
   private readonly roster = new Map<string, ManagedAgent>();
   private readonly creating = new Map<string, Promise<AgentContext>>();
+  private readonly removing = new Map<ManagedAgent, Promise<void>>();
   private readonly cancelledAgentIds = new Set<string>();
   private nextLifecycleGeneration = 0;
   private readonly onDidCreateEmitter = this._register(new Emitter<AgentContext>());
@@ -516,9 +517,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
 
   async remove(agent: AgentContext): Promise<void> {
     const managed = this.roster.get(agent.agentId);
-    if (managed === undefined || managed.context !== agent || managed.closing) return;
-    managed.closing = true;
-    await this.removeManaged(agent, managed);
+    if (managed === undefined || managed.context !== agent) return;
+    await this.ensureRemoved(managed);
   }
 
   async removeById(agentId: string): Promise<void> {
@@ -526,16 +526,30 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     try {
       const inflight = this.creating.get(agentId);
       if (inflight !== undefined) {
-        await inflight.catch(() => undefined);
+        try {
+          await inflight;
+        } catch (error) {
+          if (!isAbortError(error)) throw error;
+        }
       }
       const managed = this.roster.get(agentId);
-      if (managed !== undefined && !managed.closing) {
-        managed.closing = true;
-        await this.removeManaged(managed.context, managed);
+      if (managed !== undefined) {
+        await this.ensureRemoved(managed);
       }
     } finally {
       this.cancelledAgentIds.delete(agentId);
     }
+  }
+
+  private ensureRemoved(managed: ManagedAgent): Promise<void> {
+    const existing = this.removing.get(managed);
+    if (existing !== undefined) return existing;
+    managed.closing = true;
+    const task = this.removeManaged(managed.context, managed).finally(() => {
+      this.removing.delete(managed);
+    });
+    this.removing.set(managed, task);
+    return task;
   }
 
   private async removeManaged(agent: AgentContext, managed: ManagedAgent): Promise<void> {
