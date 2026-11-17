@@ -318,10 +318,19 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       await sweepStaleEphemeralDirs();
     }
     const sessionDir = isEphemeral
-      ? await mkdtemp(join(tmpdir(), `${EPHEMERAL_DIR_PREFIX}${process.pid}-${opts.sessionId}-`))
+      ? await mkdtemp(
+          join(
+            tmpdir(),
+            `${EPHEMERAL_DIR_PREFIX}${process.pid}-${EPHEMERAL_INCARNATION_TOKEN}-${opts.sessionId}-`,
+          ),
+        )
       : sessionDirOf(this.bootstrap.homeDir, this.handlerScope, opts.sessionId);
     if (isEphemeral) {
-      await writeFile(join(sessionDir, EPHEMERAL_PID_FILE), `${process.pid}\n`, { mode: 0o600 }).catch(() => {});
+      await writeFile(
+        join(sessionDir, EPHEMERAL_PID_FILE),
+        `${process.pid}:${EPHEMERAL_INCARNATION_TOKEN}\n`,
+        { mode: 0o600 },
+      ).catch(() => {});
     }
     const metaScope = sessionScope;
     const dirs = workdir.dirs;
@@ -1202,7 +1211,8 @@ function isMissingFileError(error: unknown): boolean {
 }
 
 const EPHEMERAL_DIR_PREFIX = 'kimi-code-ephemeral-';
-const EPHEMERAL_PID_PREFIX_RE = /^kimi-code-ephemeral-(\d+)-/;
+const EPHEMERAL_INCARNATION_TOKEN = randomUUID().slice(0, 8);
+const EPHEMERAL_OWNER_PREFIX_RE = /^kimi-code-ephemeral-(\d+)(?:-([0-9a-f]{8}))?-/;
 const EPHEMERAL_PID_FILE = '.owner-pid';
 let sweptStaleEphemeralDirs = false;
 
@@ -1232,15 +1242,20 @@ async function sweepStaleEphemeralDirs(): Promise<void> {
       .map(async (name) => {
         const dirPath = join(root, name);
         try {
-          const prefixMatch = EPHEMERAL_PID_PREFIX_RE.exec(name);
-          const pid =
-            prefixMatch !== null
-              ? Number.parseInt(prefixMatch[1]!, 10)
-              : Number.parseInt(
-                  (await readFile(join(dirPath, EPHEMERAL_PID_FILE), 'utf8')).trim(),
-                  10,
-                );
-          if (Number.isFinite(pid) && !isPidAlive(pid)) {
+          const prefixMatch = EPHEMERAL_OWNER_PREFIX_RE.exec(name);
+          let pid: number;
+          let token: string | undefined;
+          if (prefixMatch !== null) {
+            pid = Number.parseInt(prefixMatch[1]!, 10);
+            token = prefixMatch[2];
+          } else {
+            const raw = (await readFile(join(dirPath, EPHEMERAL_PID_FILE), 'utf8')).trim();
+            const [pidPart = '', tokenPart] = raw.split(':');
+            pid = Number.parseInt(pidPart, 10);
+            token = tokenPart;
+          }
+          if (!Number.isFinite(pid)) return;
+          if (pid === process.pid ? token !== EPHEMERAL_INCARNATION_TOKEN : !isPidAlive(pid)) {
             await rm(dirPath, { recursive: true, force: true });
           }
         } catch {
