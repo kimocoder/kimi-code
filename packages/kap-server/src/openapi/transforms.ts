@@ -109,6 +109,7 @@ export function transformOpenApiDocument(
   patchFileDownload(paths);
   patchSessionExport(paths);
   patchSessionAction(paths);
+  patchAgentAction(paths);
   patchFsAction(paths);
   patchFsDownload(paths);
   patchWorkspaceFsContent(paths);
@@ -257,6 +258,22 @@ function projectSessionAction(
     });
   }
   paths[`/api/v1/sessions/{session_id}:${action}`] = cloned;
+}
+
+function patchAgentAction(paths: Record<string, unknown>): void {
+  const internalPath = '/api/v1/sessions/{session_id}/agents/{tail}';
+  const pathItem = asRecord(paths[internalPath]);
+  const operation = asRecord(pathItem?.['post']);
+  if (pathItem === undefined || operation === undefined) return;
+
+  const cloned = cloneRecord(pathItem);
+  replacePathParamName(cloned, 'tail', 'agent_id');
+  const clonedOperation = asRecord(cloned['post']);
+  if (clonedOperation !== undefined) {
+    clonedOperation['operationId'] = 'runAgentCloseAction';
+  }
+  paths['/api/v1/sessions/{session_id}/agents/{agent_id}:close'] = cloned;
+  delete paths[internalPath];
 }
 
 function patchFsAction(paths: Record<string, unknown>): void {
