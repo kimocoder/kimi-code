@@ -140,6 +140,7 @@ export async function registerApiV1Routes(
       registerSessionListAndBatchRoutes(
         apiV1 as unknown as Parameters<typeof registerSessionListAndBatchRoutes>[0],
         core,
+        opts.retainSessionForRequest,
       );
       registerEnvironmentRoutes(apiV1 as unknown as Parameters<typeof registerEnvironmentRoutes>[0], core);
       registerSessionRatingRoutes(

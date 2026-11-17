@@ -305,6 +305,7 @@ async function runBatchArchive(
 export function registerSessionListAndBatchRoutes(
   app: SessionListRouteHost,
   core: Scope,
+  retainSessionForRequest?: (req: object, sessionId: string) => void,
 ): void {
   const gitResolver = new GitDomainResolver(core);
 
@@ -620,6 +621,9 @@ export function registerSessionListAndBatchRoutes(
         tags: ['sessions'],
       },
       async (req, reply) => {
+        for (const id of new Set(req.body.ids)) {
+          retainSessionForRequest?.(req, id);
+        }
         await runBatchArchive(core, action, req.body.ids, req.id, reply);
       },
     );

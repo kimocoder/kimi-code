@@ -318,7 +318,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       await sweepStaleEphemeralDirs();
     }
     const sessionDir = isEphemeral
-      ? await mkdtemp(join(tmpdir(), `${EPHEMERAL_DIR_PREFIX}${opts.sessionId}-`))
+      ? await mkdtemp(join(tmpdir(), `${EPHEMERAL_DIR_PREFIX}${process.pid}-${opts.sessionId}-`))
       : sessionDirOf(this.bootstrap.homeDir, this.handlerScope, opts.sessionId);
     if (isEphemeral) {
       await writeFile(join(sessionDir, EPHEMERAL_PID_FILE), `${process.pid}\n`, { mode: 0o600 }).catch(() => {});
@@ -1202,6 +1202,7 @@ function isMissingFileError(error: unknown): boolean {
 }
 
 const EPHEMERAL_DIR_PREFIX = 'kimi-code-ephemeral-';
+const EPHEMERAL_PID_PREFIX_RE = /^kimi-code-ephemeral-(\d+)-/;
 const EPHEMERAL_PID_FILE = '.owner-pid';
 let sweptStaleEphemeralDirs = false;
 
@@ -1231,8 +1232,14 @@ async function sweepStaleEphemeralDirs(): Promise<void> {
       .map(async (name) => {
         const dirPath = join(root, name);
         try {
-          const rawPid = (await readFile(join(dirPath, EPHEMERAL_PID_FILE), 'utf8')).trim();
-          const pid = Number.parseInt(rawPid, 10);
+          const prefixMatch = EPHEMERAL_PID_PREFIX_RE.exec(name);
+          const pid =
+            prefixMatch !== null
+              ? Number.parseInt(prefixMatch[1]!, 10)
+              : Number.parseInt(
+                  (await readFile(join(dirPath, EPHEMERAL_PID_FILE), 'utf8')).trim(),
+                  10,
+                );
           if (Number.isFinite(pid) && !isPidAlive(pid)) {
             await rm(dirPath, { recursive: true, force: true });
           }
