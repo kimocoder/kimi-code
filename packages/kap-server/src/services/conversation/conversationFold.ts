@@ -106,7 +106,7 @@ export interface ConversationState {
   provisionalEnds: Record<string, TurnEnd>;
   recordsTurnEnds: boolean;
   trailingRejectedPrompt: boolean;
-  awaitingContinuationCompletion: boolean;
+  awaitingContinuationTurnNumber?: number;
   latestPromptId?: string;
   stepParts: Record<string, number>;
   compaction?: CompactionDetails;
@@ -130,7 +130,6 @@ export function createConversationState(agentId: string, fork?: ConversationFork
     provisionalEnds: {},
     recordsTurnEnds: false,
     trailingRejectedPrompt: false,
-    awaitingContinuationCompletion: false,
     stepParts: {},
   };
 }
@@ -156,10 +155,12 @@ export function applyConversationRecord(state: ConversationState, record: WireRe
       if (typeof record['trigger'] === 'string') state.recordsTurnEnds = true;
       state.trailingRejectedPrompt = false;
       const promptId = stringField(record['promptId']);
-      state.awaitingContinuationCompletion = record['trigger'] === 'continue' && promptId === undefined;
+      const turnNumber = numberField(record['turnId']);
+      state.awaitingContinuationTurnNumber =
+        record['trigger'] === 'continue' && promptId === undefined ? (turnNumber ?? -1) : undefined;
       if (promptId !== undefined) state.latestPromptId = promptId;
       state.pendingPrompt = {
-        turnNumber: numberField(record['turnId']),
+        turnNumber,
         promptId,
         originKind: stringField((record['origin'] as { kind?: unknown } | undefined)?.kind),
       };
@@ -203,11 +204,11 @@ export function applyConversationRecord(state: ConversationState, record: WireRe
           time,
         );
       } else {
-        state.awaitingContinuationCompletion = false;
+        state.awaitingContinuationTurnNumber = undefined;
       }
       return;
     case 'prompt.aborted':
-      state.awaitingContinuationCompletion = false;
+      state.awaitingContinuationTurnNumber = undefined;
       return;
     case 'interaction.request':
       applyInteractionRequest(state, record, time);
@@ -249,12 +250,18 @@ export interface RunningWork {
 export function settleOrphanTurns(state: ConversationState, running: RunningWork = {}): ConversationState {
   const orphaned = (turn: ConversationTurn): boolean =>
     turn.status === 'running' && (turn.turn_number === undefined || turn.turn_number !== running.turnNumber);
-  if (!state.turns.some(orphaned)) return state;
+  const staleContinuation =
+    state.awaitingContinuationTurnNumber !== undefined &&
+    (running.turnNumber === undefined || state.awaitingContinuationTurnNumber !== running.turnNumber);
+  if (!state.turns.some(orphaned)) {
+    return staleContinuation ? { ...state, awaitingContinuationTurnNumber: undefined } : state;
+  }
   const next: ConversationState = {
     ...state,
     turns: [...state.turns],
     tools: { ...state.tools },
     provisionalEnds: { ...state.provisionalEnds },
+    awaitingContinuationTurnNumber: staleContinuation ? undefined : state.awaitingContinuationTurnNumber,
   };
   next.turns.forEach((turn, index) => {
     if (!orphaned(turn)) return;
@@ -298,7 +305,7 @@ export function undoConversationTurns(state: ConversationState, count: number): 
   state.latestPromptId = undefined;
   state.pendingSteers = 0;
   state.trailingRejectedPrompt = false;
-  state.awaitingContinuationCompletion = false;
+  state.awaitingContinuationTurnNumber = undefined;
   return state;
 }
 
@@ -543,6 +550,9 @@ function applyStepRetrying(state: ConversationState, record: WireRecord): void {
 
 function applyTurnEnded(state: ConversationState, record: WireRecord, time: number): void {
   state.recordsTurnEnds = true;
+  if (record['reason'] !== 'failed' && record['reason'] !== 'blocked') {
+    state.awaitingContinuationTurnNumber = undefined;
+  }
   const turnNumber = numberField(record['turnId']);
   if (turnNumber !== undefined && state.pendingPrompt?.turnNumber === turnNumber) state.pendingPrompt = undefined;
   const turn = findTurnByNumber(state, turnNumber) ?? unnumberedOpenTurn(state);
@@ -596,8 +606,8 @@ function applyPromptRejected(
     }
     return;
   }
-  if (!blocked && state.awaitingContinuationCompletion) {
-    state.awaitingContinuationCompletion = false;
+  if (!blocked && state.awaitingContinuationTurnNumber !== undefined) {
+    state.awaitingContinuationTurnNumber = undefined;
     return;
   }
   state.trailingRejectedPrompt = true;
@@ -730,7 +740,7 @@ function clearConversation(state: ConversationState): void {
   state.implicitlyEnded = {};
   state.provisionalEnds = {};
   state.trailingRejectedPrompt = false;
-  state.awaitingContinuationCompletion = false;
+  state.awaitingContinuationTurnNumber = undefined;
   state.stepParts = {};
   state.compaction = undefined;
 }

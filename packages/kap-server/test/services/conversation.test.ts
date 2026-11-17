@@ -1350,5 +1350,40 @@ describe('conversation feed', () => {
       record('prompt.completed', { promptId: 'p2', reason: 'failed' }),
     ]);
     expect(subsequentGateFailure.trailingRejectedPrompt).toBe(true);
+
+    const crashedContinuation = settleOrphanTurns(
+      fold([
+        turnPrompt(0, 'p1'),
+        userMessage('p1', 'work'),
+        turnEnded(0, 'cancelled'),
+        record('turn.prompt', {
+          turnId: 1,
+          promptId: undefined,
+          origin: { kind: 'injection', variant: 'turn_continue', ownerPromptId: 'p1' },
+          input: [],
+          trigger: 'continue',
+        }),
+        loop({ type: 'step.begin', uuid: 'step-c1', turnId: '1', step: 1 }),
+      ]),
+    );
+    applyConversationRecord(crashedContinuation, record('prompt.completed', { promptId: 'p2', reason: 'failed' }));
+    expect(crashedContinuation.trailingRejectedPrompt).toBe(true);
+
+    const cancelledContinuationThenGateFailure = fold([
+      turnPrompt(0, 'p1'),
+      userMessage('p1', 'work'),
+      turnEnded(0, 'cancelled'),
+      record('turn.prompt', {
+        turnId: 1,
+        promptId: undefined,
+        origin: { kind: 'injection', variant: 'turn_continue', ownerPromptId: 'p1' },
+        input: [],
+        trigger: 'continue',
+      }),
+      loop({ type: 'step.begin', uuid: 'step-c1', turnId: '1', step: 1 }),
+      turnEnded(1, 'cancelled'),
+      record('prompt.completed', { promptId: 'p2', reason: 'failed' }),
+    ]);
+    expect(cancelledContinuationThenGateFailure.trailingRejectedPrompt).toBe(true);
   });
 });
